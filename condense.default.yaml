@@ -1,0 +1,66 @@
+# condense.yaml — Default configuration
+# See: https://github.com/condense-ai/condense
+
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 300
+  # api_key_env: "OPENAI_API_KEY"
+
+deployment:
+  mode: "behind-gateway"
+  host: "0.0.0.0"
+  port: 8080
+
+optimizations:
+  cache:
+    enabled: true
+    exact:
+      enabled: true
+      backend: "memory"
+      max_size: 10000
+      ttl_seconds: 3600
+    non_deterministic: "skip"
+
+  provider_cache:
+    enabled: true
+    anthropic:
+      inject_cache_control: true
+      cache_system_prompt: true
+      cache_tools: true
+    openai:
+      enabled: true
+    deepseek:
+      enabled: true
+
+  routing:
+    enabled: false
+    rules:
+      - condition: "short_messages"
+        max_chars: 500
+        model: "gpt-4o-mini"
+      - condition: "no_tools"
+        model: "gpt-4o-mini"
+
+  budget:
+    enabled: true
+    max_session_cost_usd: 10.0
+    max_turns_per_session: 100
+    loop_detection_window: 5
+
+redis:
+  enabled: false
+  url: "redis://localhost:6379"
+  # password_env: "REDIS_PASSWORD"
+
+metrics:
+  enabled: true
+  endpoint: "/metrics"
+
+headers:
+  add_savings_headers: true
+
+failsafe:
+  on_error: "passthrough"
+  circuit_breaker:
+    threshold: 5
+    recovery_seconds: 30

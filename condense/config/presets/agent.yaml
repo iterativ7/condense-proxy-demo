@@ -1,0 +1,62 @@
+# condense.yaml — Agent preset
+# Optimized for agent/agentic workloads with tool use.
+# Caching + provider cache enabled. No routing (agents need consistent models).
+# Budget enforcement to prevent runaway agent loops.
+
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 300
+  # api_key_env: "OPENAI_API_KEY"
+
+deployment:
+  mode: "behind-gateway"
+  host: "0.0.0.0"
+  port: 8080
+
+optimizations:
+  cache:
+    enabled: true
+    exact:
+      enabled: true
+      backend: "memory"
+      max_size: 10000
+      ttl_seconds: 3600
+    non_deterministic: "skip"
+
+  provider_cache:
+    enabled: true
+    anthropic:
+      inject_cache_control: true
+      cache_system_prompt: true
+      cache_tools: true
+    openai:
+      enabled: true
+    deepseek:
+      enabled: true
+
+  routing:
+    enabled: false
+    rules: []
+
+  budget:
+    enabled: true
+    max_session_cost_usd: 20.0
+    max_turns_per_session: 200
+    loop_detection_window: 5
+
+redis:
+  enabled: false
+  url: "redis://localhost:6379"
+
+metrics:
+  enabled: true
+  endpoint: "/metrics"
+
+headers:
+  add_savings_headers: true
+
+failsafe:
+  on_error: "passthrough"
+  circuit_breaker:
+    threshold: 5
+    recovery_seconds: 30

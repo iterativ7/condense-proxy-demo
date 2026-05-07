@@ -1,0 +1,15 @@
+version: "3.8"
+
+# Minimal compose — without Redis, for dev/testing only
+services:
+  condense:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./condense.yaml:/app/condense.yaml:ro
+    environment:
+      - CONDENSE_CONFIG=/app/condense.yaml
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
