@@ -40,7 +40,8 @@ async def chat_completions(
             status_code=400,
         )
 
-    config: CondenseConfig = load_config()
+    config: CondenseConfig = getattr(app.state, "config", load_config())
+    cache_config = config.cache_config()
 
     # Compute cache namespace (tenant isolation)
     api_key = ""
@@ -76,8 +77,8 @@ async def chat_completions(
     # Execute pipeline
     pipeline = build_pipeline(
         config,
-        app.state.cache_backend,
-        app.state.session_store,
+        getattr(app.state, "cache_backend", None),
+        getattr(app.state, "session_store", None),
         app.state.http_client,
     )
 
@@ -105,23 +106,25 @@ async def chat_completions(
         )
 
     # Post-pipeline: store in cache (background)
-    if not ctx.cache_hit and result.response and result.status_code == 200:
+    cache_backend = getattr(app.state, "cache_backend", None)
+    if cache_backend is not None and not ctx.cache_hit and result.response and result.status_code == 200:
         cache_key = ctx.metadata.get("cache_key")
         if cache_key:
             try:
-                await app.state.cache_backend.set(
+                await cache_backend.set(
                     cache_key,
                     result.response,
-                    ttl=config.optimizations.cache.exact.ttl_seconds,
+                    ttl=cache_config.exact.ttl_seconds,
                 )
             except Exception as e:
                 logger.error(f"Failed to store cache: {e}")
 
     # Post-pipeline: update session state
-    if ctx.session_id:
+    session_store = getattr(app.state, "session_store", None)
+    if session_store is not None and ctx.session_id:
         try:
             request_hash = compute_cache_key(ctx.original_request)
-            await app.state.session_store.update(
+            await session_store.update(
                 ctx.session_id,
                 cost_usd=ctx.metadata.get("estimated_cost", 0.0),
                 request_hash=request_hash,

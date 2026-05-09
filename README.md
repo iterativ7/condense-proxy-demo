@@ -1,137 +1,243 @@
 # Condense
 
-**LLM cost optimization proxy** — reduce API costs 50-80% through caching, provider cache injection, model routing, and budget enforcement.
+Condense is an LLM cost-optimization proxy that sits between your gateway/app and model provider.
+
+For local setup and deterministic startup flow, see `DEVELOPMENT.md`.
 
 ```
-App → AI Gateway (auth, rate-limit, retry) → CONDENSE PROXY (optimize) → LLM Provider
+App -> Gateway -> Condense Proxy -> Model Provider
 ```
 
-Condense sits behind your AI gateway and optimizes every LLM request transparently. No code changes to your app — just point the gateway's upstream to Condense.
+## What It Does
+
+- Exact-match caching
+- Provider prompt-cache injection (Anthropic/OpenAI/DeepSeek-aware)
+- Rule-based model routing
+- Session budget enforcement
+- Request/latency/savings metrics
+- `X-Condense-*` response headers for transparency
+
+## Key Architecture (Current)
+
+- Canonical optimization declarations in config (`optimizations[]` entries)
+- Dependency-aware DAG scheduler (topological batches)
+- Two-phase step contract:
+  - `forward()` (main execution)
+  - `backward()` (reverse-order post-processing hooks)
+- Forwarding uses LiteLLM SDK (`litellm.acompletion`) rather than raw upstream HTTP calls
 
 ## Quick Start
 
 ```bash
-# Install
-pip install -e .
+# Install dependencies
+poetry install
 
-# Generate config
-condense init --preset conservative
+# Start proxy (explicit config is safest)
+condense start --config condense.default.yaml
 
-# Edit condense.yaml to set your upstream URL
-# Start proxy
-condense start
-
-# Send a test request
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
-
-# Check health
+# Health checks
 curl http://localhost:8080/health
-
-# Check metrics
-curl http://localhost:8080/metrics
+curl http://localhost:8080/health/ready
 ```
 
-## Features
+Config resolution order when `--config` is not provided:
 
-### 4 Optimization Techniques
+1. `CONDENSE_CONFIG` environment variable
+2. `./condense.yaml`
+3. `./condense.default.yaml`
 
-1. **Exact-match caching** — Hash request params, return cached response on match
-2. **Provider prompt cache injection** — Auto-inject `cache_control` for Anthropic, optimize prefix for OpenAI
-3. **Rule-based model routing** — Route simple requests to cheaper models based on configurable rules
-4. **Session-level budget enforcement** — Per-session cost caps, turn limits, loop detection
+If you specifically want to run with `condense.default.yaml`, use `--config condense.default.yaml`.
 
-### Infrastructure
+## Config Shape
 
-- **Config-driven** — Enable/disable techniques via `condense.yaml`, not code changes
-- **Pipeline architecture** — Extensible sequential pipeline, new technique = 1 step file
-- **Failsafe first** — Never block a valid request due to optimization failure
-- **Tenant isolation** — Cache keys include API key hash
-- **Prometheus metrics** — `/metrics` endpoint with cache hit rates, savings, latency
-- **Response headers** — `X-Condense-*` headers report what was optimized
-
-## Configuration
+`condense.yaml` uses canonical optimization entries:
 
 ```yaml
 upstream:
   url: "https://api.openai.com/v1"
   timeout_seconds: 300
+  # api_key_env: "OPENAI_API_KEY"
 
 optimizations:
-  cache:
+  - id: "exact_cache"
+    type: "cache"
     enabled: true
-    exact:
-      backend: "memory"    # or "redis"
-      max_size: 10000
-      ttl_seconds: 3600
+    stage: "both"        # both | forward | backward
+    config:
+      exact:
+        backend: "memory" # memory | redis
+        max_size: 10000
+        ttl_seconds: 3600
+      non_deterministic: "skip"
 
-  provider_cache:
+  - id: "provider_cache"
+    type: "provider_cache"
     enabled: true
+    depends_on: ["exact_cache"]
+    config: {}
 
-  routing:
+  - id: "routing"
+    type: "routing"
     enabled: false
-    rules:
-      - condition: "short_messages"
-        max_chars: 500
-        model: "gpt-4o-mini"
+    depends_on: ["provider_cache"]
+    config:
+      rules:
+        - condition: "short_messages"
+          max_chars: 500
+          model: "gpt-4o-mini"
 
-  budget:
+  - id: "budget"
+    type: "budget"
     enabled: true
-    max_session_cost_usd: 10.0
-    max_turns_per_session: 100
+    # depends_on allowed even if referenced step is disabled
+    config:
+      max_session_cost_usd: 10.0
+      max_turns_per_session: 100
+      loop_detection_window: 5
 ```
 
-### Presets
+Validation behavior:
+- duplicate optimization ids fail
+- unknown dependency ids fail
+- dependency cycles across enabled entries fail
+- dependencies to disabled entries are allowed and ignored at runtime
 
-Generate config from a preset: `condense init --preset <name>`
+## Runtime Resource Behavior
 
-| Preset | Description |
-|---|---|
-| `conservative` | Safe defaults, caching + provider cache only |
-| `aggressive` | Max savings, all optimizations enabled |
-| `agent` | For agentic workloads with tool use |
-| `rag` | For RAG pipelines, heavy caching |
-| `chat` | For conversational chat apps |
+Resource startup is optimization-aware:
+
+- cache backend initializes only when `cache` optimization is enabled
+- session store initializes only when `budget` optimization is enabled
+- pipeline construction enforces required resources for enabled optimization types
+
+## LiteLLM SDK Forwarding
+
+`ForwardStep` uses LiteLLM SDK (`litellm.acompletion`) and supports:
+
+- `upstream.url` as `api_base` (OpenAI-compatible providers, Ollama OpenAI surface, etc.)
+- API key from incoming `Authorization` header when present
+- fallback to `upstream.api_key_env` when configured
+
+## Local Ollama Example
+
+```yaml
+upstream:
+  url: "http://localhost:11434"
+  timeout_seconds: 300
+```
+
+Then send:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"ollama/gemma3:4b",
+    "messages":[{"role":"user","content":"Say hello in one sentence."}],
+    "temperature":0
+  }'
+```
+
+## API Reference (Request/Response)
+
+Primary endpoint:
+
+- `POST /v1/chat/completions`
+
+This route is OpenAI-compatible and accepts standard chat-completions payloads.
+
+Example request:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"ollama/gemma3:4b",
+    "messages":[{"role":"user","content":"Explain cache hit in one line."}],
+    "temperature":0
+  }'
+```
+
+Expected success response (`200`):
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  }
+}
+```
+
+Condense response headers (when `headers.add_savings_headers: true`):
+
+- `X-Condense-Cache-Hit`: `true`/`false`
+- `X-Condense-Cache-Type`: cache strategy used (`none` if miss)
+- `X-Condense-Original-Model`: model from incoming request
+- `X-Condense-Routed-Model`: actual model used after routing
+- `X-Condense-Techniques`: applied optimization ids (`none` when none applied)
+- `X-Condense-Savings-USD`: estimated savings for the request
+- `X-Condense-Session-ID`: present when a session is detected
+- `X-Condense-Session-Turn`: present when a session is detected
+
+Common error responses:
+
+- `400` invalid JSON:
+  - `{"error":{"message":"Invalid JSON: ...","type":"invalid_request_error"}}`
+- `429` budget/session rejection:
+  - `{"error":{"message":"...","type":"condense_error"}}`
+- `502` upstream proxy failure (failsafe path):
+  - `{"error":{"message":"...","type":"proxy_error"}}`
 
 ## Docker
 
 ```bash
-# With Redis (production)
-docker compose up -d
+# Minimal stack (no Redis)
+docker compose -f docker-compose.minimal.yml up -d --build
 
-# Without Redis (dev/testing)
-docker compose -f docker-compose.minimal.yml up -d
+# Full stack
+docker compose up -d --build
 ```
 
-## Development
+The Docker healthcheck now uses Python stdlib (no curl dependency required in image).
+
+## Tests
+
+Prerequisites for Docker + Ollama integration tests:
+
+- Docker Desktop/Engine installed, daemon running, and CLI access working (`docker info`)
+- Internet access at least once (to pull `ollama/ollama` image and model if missing)
+- A valid Condense config file available (default prompt value: `condense.local.yaml`)
+- Port `11434` available for Ollama and port `8080` available for Condense test container
 
 ```bash
-# Install dev dependencies
-poetry install
+# 1) Docker setup for integration tests.
+# Prompts for config YAML, starts/checks Ollama, and ensures model (default: gemma3:4b).
+make docker-prep-integration
 
-# Run tests
+# 2) Regression gate: run all tests (unit + integration).
 make test
 
-# Lint
-make lint
+# Focused suites
+pytest tests/test_config tests/test_pipeline tests/test_server -q
 
-# Run locally
-make run
-```
-
-## Architecture
-
-```
-Request → FastAPI → Pipeline:
-  1. CacheStep (exact match lookup)
-  2. ProviderCacheStep (inject cache_control)
-  3. RoutingStep (swap to cheaper model)
-  4. BudgetStep (check session limits)
-  5. ForwardStep (POST to upstream)
-→ Response + X-Condense-* headers
+# Docker + Ollama integration test
+pytest tests/test_server/test_docker_ollama_integration.py -q
 ```
 
 ## License
 
-Business Source License 1.1 — see [LICENSE](LICENSE).
+Business Source License 1.1 — see `LICENSE`.

@@ -8,13 +8,14 @@ from condense.pipeline.context import PipelineContext
 from condense.pipeline.result import StepResult
 from condense.pipeline.steps.base import BaseStep
 from condense.session.store import SessionStore
-from condense.utils.hashing import sha256_hex
 
 logger = logging.getLogger(__name__)
 
 
 class BudgetStep(BaseStep):
     """Check session budget constraints before forwarding."""
+    name = "budget"
+    reads = frozenset({"session_state", "metadata:estimated_cost"})
 
     def __init__(self, config: dict, session_store: SessionStore):
         super().__init__(config)

@@ -1,15 +1,13 @@
-# condense.yaml — Aggressive preset
-# Maximum savings, slightly more risk. Routes simple requests to cheaper models.
+# Local run config for Ollama + LiteLLM SDK validation
 
 upstream:
-  url: "https://api.openai.com/v1"
+  url: "http://localhost:11434"
   timeout_seconds: 300
-  # api_key_env: "OPENAI_API_KEY"
 
 deployment:
-  mode: "behind-gateway"
-  host: "0.0.0.0"
-  port: 8080
+  mode: "standalone"
+  host: "127.0.0.1"
+  port: 8090
 
 optimizations:
   - id: "exact_cache"
@@ -20,34 +18,21 @@ optimizations:
         enabled: true
         backend: "memory"
         max_size: 10000
-        ttl_seconds: 7200
-      non_deterministic: "allow"
+        ttl_seconds: 3600
+      non_deterministic: "skip"
 
   - id: "provider_cache"
     type: "provider_cache"
-    enabled: true
+    enabled: false
     depends_on: ["exact_cache"]
-    config:
-      anthropic:
-        inject_cache_control: true
-        cache_system_prompt: true
-        cache_tools: true
-      openai:
-        enabled: true
-      deepseek:
-        enabled: true
+    config: {}
 
   - id: "routing"
     type: "routing"
-    enabled: true
+    enabled: false
     depends_on: ["provider_cache"]
     config:
-      rules:
-        - condition: "short_messages"
-          max_chars: 500
-          model: "gpt-4o-mini"
-        - condition: "no_tools"
-          model: "gpt-4o-mini"
+      rules: []
 
   - id: "budget"
     type: "budget"

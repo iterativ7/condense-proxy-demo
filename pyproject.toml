@@ -17,6 +17,7 @@ httpx = "^0.28.0"
 pyyaml = "^6.0"
 pydantic = "^2.0"
 click = "^8.1"
+litellm = "*"
 tiktoken = {version = "^0.8.0", optional = true}
 watchfiles = "^1.0.0"
 redis = {version = "^5.0", optional = true}
@@ -37,3 +38,6 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "integration: marks tests that require local Docker/Ollama integration",
+]

@@ -52,6 +52,10 @@ def create_app(config_path: str = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         """Manage application lifecycle — startup and shutdown."""
         config = load_config(config_path)
+        enabled_optimizations = {entry.type for entry in config.optimizations if entry.enabled}
+        cache_enabled = "cache" in enabled_optimizations
+        budget_enabled = "budget" in enabled_optimizations
+        cache_config = config.cache_config()
         logger.info(f"Condense v{__version__} starting")
         logger.info(f"Upstream: {config.upstream.url}")
         logger.info(f"Mode: {config.deployment.mode}")
@@ -59,35 +63,42 @@ def create_app(config_path: str = None) -> FastAPI:
         # Initialize shared state
         app.state.config = config
 
-        # Cache backend
-        if config.redis.enabled:
-            try:
-                import redis.asyncio as aioredis
-                redis_client = aioredis.from_url(
-                    config.redis.url,
-                    decode_responses=True,
-                )
-                from condense.cache.redis_backend import RedisCache
-                app.state.cache_backend = RedisCache(
-                    redis_client,
-                    default_ttl=config.optimizations.cache.exact.ttl_seconds,
-                )
-                logger.info("Using Redis cache backend")
-            except ImportError:
-                logger.warning("Redis not available, falling back to in-memory cache")
-                app.state.cache_backend = InMemoryCache(
-                    max_size=config.optimizations.cache.exact.max_size,
-                    default_ttl=config.optimizations.cache.exact.ttl_seconds,
-                )
-        else:
-            app.state.cache_backend = InMemoryCache(
-                max_size=config.optimizations.cache.exact.max_size,
-                default_ttl=config.optimizations.cache.exact.ttl_seconds,
-            )
-            logger.info("Using in-memory cache backend")
+        # Cache backend (only when cache optimization is enabled)
+        app.state.cache_backend = None
+        if cache_enabled:
+            if config.redis.enabled:
+                try:
+                    import redis.asyncio as aioredis
+                    redis_client = aioredis.from_url(
+                        config.redis.url,
+                        decode_responses=True,
+                    )
+                    from condense.cache.redis_backend import RedisCache
 
-        # Session store
-        app.state.session_store = SessionStore()
+                    app.state.cache_backend = RedisCache(
+                        redis_client,
+                        default_ttl=cache_config.exact.ttl_seconds,
+                    )
+                    logger.info("Using Redis cache backend")
+                except ImportError:
+                    logger.warning("Redis not available, falling back to in-memory cache")
+                    app.state.cache_backend = InMemoryCache(
+                        max_size=cache_config.exact.max_size,
+                        default_ttl=cache_config.exact.ttl_seconds,
+                    )
+            else:
+                app.state.cache_backend = InMemoryCache(
+                    max_size=cache_config.exact.max_size,
+                    default_ttl=cache_config.exact.ttl_seconds,
+                )
+                logger.info("Using in-memory cache backend")
+        else:
+            logger.info("Cache optimization disabled; skipping cache backend initialization")
+
+        # Session store (only when budget optimization is enabled)
+        app.state.session_store = SessionStore() if budget_enabled else None
+        if not budget_enabled:
+            logger.info("Budget optimization disabled; skipping session store initialization")
 
         # HTTP client for upstream
         app.state.http_client = httpx.AsyncClient(
@@ -111,9 +122,10 @@ def create_app(config_path: str = None) -> FastAPI:
         # Shutdown
         logger.info("Shutting down Condense proxy")
         await app.state.http_client.aclose()
-        if hasattr(app.state.cache_backend, '_redis'):
+        cache_backend = getattr(app.state, "cache_backend", None)
+        if cache_backend is not None and hasattr(cache_backend, "_redis"):
             try:
-                await app.state.cache_backend._redis.aclose()
+                await cache_backend._redis.aclose()
             except Exception:
                 pass
 

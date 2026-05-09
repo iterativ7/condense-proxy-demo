@@ -1,4 +1,4 @@
-.PHONY: install test lint format run docker-build docker-up docker-down clean
+.PHONY: install test lint format run docker-build docker-up docker-down docker-prep-integration clean
 
 install:
 	poetry install
@@ -29,6 +29,9 @@ docker-up:
 
 docker-up-minimal:
 	docker compose -f docker-compose.minimal.yml up -d
+
+docker-prep-integration:
+	./scripts/prepare_integration_docker.sh
 
 docker-down:
 	docker compose down

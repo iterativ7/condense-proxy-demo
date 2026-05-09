@@ -4,7 +4,6 @@ Auto-injects cache_control headers for Anthropic models to leverage
 their prompt caching feature (90% savings on repeated token prefixes).
 """
 
-import copy
 import logging
 from condense.pipeline.context import PipelineContext
 from condense.pipeline.result import StepResult
@@ -16,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 class ProviderCacheStep(BaseStep):
     """Inject provider-specific cache control headers."""
+    name = "provider_cache"
+    reads = frozenset({"request:model", "request:messages", "request:tools"})
+    writes = frozenset({"request:messages", "request:tools"})
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
         model = ctx.request.get("model", "")

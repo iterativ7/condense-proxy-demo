@@ -11,7 +11,7 @@ class TestCondenseConfig:
         config = CondenseConfig()
         assert config.upstream.url == "https://api.openai.com/v1"
         assert config.deployment.port == 8080
-        assert config.optimizations.cache.enabled is True
+        assert config.optimizations == []
         assert config.failsafe.on_error == "passthrough"
 
     def test_from_dict(self):
@@ -19,21 +19,30 @@ class TestCondenseConfig:
         data = {
             "upstream": {"url": "https://custom.api.com/v1", "timeout_seconds": 60},
             "deployment": {"port": 9090},
-            "optimizations": {
-                "cache": {"enabled": False},
-                "routing": {
-                    "enabled": True,
-                    "rules": [{"condition": "short_messages", "max_chars": 200, "model": "gpt-4o-mini"}],
+            "optimizations": [
+                {
+                    "id": "cache-opt",
+                    "type": "cache",
+                    "enabled": False,
+                    "config": {"non_deterministic": "skip"},
                 },
-            },
+                {
+                    "id": "routing-opt",
+                    "type": "routing",
+                    "enabled": True,
+                    "config": {
+                        "rules": [{"condition": "short_messages", "max_chars": 200, "model": "gpt-4o-mini"}]
+                    },
+                },
+            ],
         }
         config = CondenseConfig(**data)
         assert config.upstream.url == "https://custom.api.com/v1"
         assert config.upstream.timeout_seconds == 60
         assert config.deployment.port == 9090
-        assert config.optimizations.cache.enabled is False
-        assert config.optimizations.routing.enabled is True
-        assert len(config.optimizations.routing.rules) == 1
+        assert config.optimizations[0].enabled is False
+        assert config.optimizations[1].enabled is True
+        assert len(config.routing_config().rules) == 1
 
     def test_routing_rule_validation(self):
         """Routing rules require condition and model."""
@@ -56,3 +65,21 @@ class TestCondenseConfig:
         assert "upstream" in data
         assert "optimizations" in data
         assert data["upstream"]["url"] == "https://api.openai.com/v1"
+
+    def test_duplicate_optimization_ids_fail(self):
+        with pytest.raises(ValidationError):
+            CondenseConfig(
+                optimizations=[
+                    {"id": "dup", "type": "cache"},
+                    {"id": "dup", "type": "routing"},
+                ]
+            )
+
+    def test_dependency_cycle_fails(self):
+        with pytest.raises(ValidationError):
+            CondenseConfig(
+                optimizations=[
+                    {"id": "a", "type": "cache", "depends_on": ["b"]},
+                    {"id": "b", "type": "routing", "depends_on": ["a"]},
+                ]
+            )
