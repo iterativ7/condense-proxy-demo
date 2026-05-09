@@ -179,40 +179,50 @@ deployment:
   port: 8080
 
 optimizations:
-  cache:
+  - id: "exact_cache"
+    type: "cache"
     enabled: {str(c['cache_enabled']).lower()}
-    exact:
-      enabled: true
-      backend: "memory"
-      max_size: 10000
-      ttl_seconds: 3600
-    non_deterministic: "skip"
+    config:
+      exact:
+        enabled: true
+        backend: "memory"
+        max_size: 10000
+        ttl_seconds: 3600
+      non_deterministic: "skip"
 
-  provider_cache:
+  - id: "provider_cache"
+    type: "provider_cache"
     enabled: {str(c['provider_cache_enabled']).lower()}
-    anthropic:
-      inject_cache_control: true
-      cache_system_prompt: true
-      cache_tools: true
-    openai:
-      enabled: true
-    deepseek:
-      enabled: true
+    depends_on: ["exact_cache"]
+    config:
+      anthropic:
+        inject_cache_control: true
+        cache_system_prompt: true
+        cache_tools: true
+      openai:
+        enabled: true
+      deepseek:
+        enabled: true
 
-  routing:
+  - id: "routing"
+    type: "routing"
     enabled: {str(c['routing_enabled']).lower()}
-    rules:
-      - condition: "short_messages"
-        max_chars: 500
-        model: "gpt-4o-mini"
-      - condition: "no_tools"
-        model: "gpt-4o-mini"
+    depends_on: ["provider_cache"]
+    config:
+      rules:
+        - condition: "short_messages"
+          max_chars: 500
+          model: "gpt-4o-mini"
+        - condition: "no_tools"
+          model: "gpt-4o-mini"
 
-  budget:
+  - id: "budget"
+    type: "budget"
     enabled: {str(c['budget_enabled']).lower()}
-    max_session_cost_usd: 10.0
-    max_turns_per_session: 100
-    loop_detection_window: 5
+    config:
+      max_session_cost_usd: 10.0
+      max_turns_per_session: 100
+      loop_detection_window: 5
 
 redis:
   enabled: false

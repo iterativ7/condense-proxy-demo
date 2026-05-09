@@ -2,7 +2,6 @@
 
 import pytest
 import httpx
-import respx
 from condense.config.schema import CondenseConfig
 from condense.pipeline.context import PipelineContext
 from condense.pipeline.steps.forward_step import ForwardStep
@@ -23,16 +22,20 @@ def make_ctx(request=None):
 
 class TestForwardStep:
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_successful_forward(self):
+    async def test_successful_forward(self, monkeypatch):
         """Successful upstream response is returned."""
         response_data = {
             "id": "chatcmpl-123",
             "choices": [{"message": {"content": "Hi"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
         }
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            return_value=httpx.Response(200, json=response_data)
+
+        async def fake_acompletion(**kwargs):
+            return response_data
+
+        monkeypatch.setattr(
+            "condense.pipeline.steps.forward_step.litellm.acompletion",
+            fake_acompletion,
         )
 
         async with httpx.AsyncClient() as client:
@@ -48,14 +51,18 @@ class TestForwardStep:
         assert result.response["id"] == "chatcmpl-123"
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_upstream_error_passthrough(self):
+    async def test_upstream_error_passthrough(self, monkeypatch):
         """Upstream 4xx/5xx errors are passed through."""
-        error_response = {
-            "error": {"message": "Invalid API key", "type": "auth_error"}
-        }
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            return_value=httpx.Response(401, json=error_response)
+
+        class FakeAuthError(Exception):
+            status_code = 401
+
+        async def fake_acompletion(**kwargs):
+            raise FakeAuthError("Invalid API key")
+
+        monkeypatch.setattr(
+            "condense.pipeline.steps.forward_step.litellm.acompletion",
+            fake_acompletion,
         )
 
         async with httpx.AsyncClient() as client:
@@ -71,16 +78,20 @@ class TestForwardStep:
         assert "Invalid API key" in result.response["error"]["message"]
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_cost_estimation(self):
+    async def test_cost_estimation(self, monkeypatch):
         """Cost estimation is computed and stored."""
         response_data = {
             "id": "chatcmpl-123",
             "choices": [{"message": {"content": "Hi"}}],
             "usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
         }
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            return_value=httpx.Response(200, json=response_data)
+
+        async def fake_acompletion(**kwargs):
+            return response_data
+
+        monkeypatch.setattr(
+            "condense.pipeline.steps.forward_step.litellm.acompletion",
+            fake_acompletion,
         )
 
         async with httpx.AsyncClient() as client:

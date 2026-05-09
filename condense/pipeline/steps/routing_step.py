@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 class RoutingStep(BaseStep):
     """Evaluate routing rules and swap model if a rule matches."""
+    name = "routing"
+    reads = frozenset({"request:model", "request:messages", "request:tools"})
+    writes = frozenset({"request:model", "routing_state"})
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
         rules_config = self.config.get("rules", [])

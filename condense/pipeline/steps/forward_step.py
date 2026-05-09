@@ -5,6 +5,7 @@ import os
 from typing import Optional
 
 import httpx
+import litellm
 
 from condense.pipeline.context import PipelineContext
 from condense.pipeline.result import StepResult
@@ -18,6 +19,10 @@ class ForwardStep(BaseStep):
 
     This is always the last step in the pipeline.
     """
+    name = "forward"
+    can_short_circuit = True
+    reads = frozenset({"request", "metadata:authorization_header"})
+    writes = frozenset({"metadata:estimated_cost"})
 
     def __init__(self, config: dict, http_client: httpx.AsyncClient):
         super().__init__(config)
@@ -26,46 +31,54 @@ class ForwardStep(BaseStep):
         self.timeout = config.get("timeout_seconds", 300)
         self.api_key_env = config.get("api_key_env")
 
-    async def execute(self, ctx: PipelineContext) -> StepResult:
-        url = f"{self.upstream_url.rstrip('/')}/chat/completions"
+    @staticmethod
+    def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
+        if not authorization:
+            return None
+        if authorization.lower().startswith("bearer "):
+            return authorization[7:].strip() or None
+        return authorization.strip() or None
 
-        # Build headers
-        headers = {
-            "Content-Type": "application/json",
-        }
-
-        # Inject API key if configured
-        if self.api_key_env:
-            api_key = os.environ.get(self.api_key_env)
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-
-        # Forward any Authorization header from the original request
-        original_auth = ctx.metadata.get("authorization_header")
+    def _resolve_api_key(self, ctx: PipelineContext) -> Optional[str]:
+        original_auth = self._extract_bearer_token(ctx.metadata.get("authorization_header"))
         if original_auth:
-            headers["Authorization"] = original_auth
+            return original_auth
+        if self.api_key_env:
+            env_key = os.environ.get(self.api_key_env)
+            if env_key:
+                return env_key
+        return None
 
+    @staticmethod
+    def _to_dict_response(raw) -> dict:
+        if isinstance(raw, dict):
+            return raw
+        if hasattr(raw, "model_dump"):
+            return raw.model_dump()
+        if hasattr(raw, "dict"):
+            return raw.dict()
+        return dict(raw)
+
+    async def execute(self, ctx: PipelineContext) -> StepResult:
         try:
-            response = await self.http_client.post(
-                url,
-                json=ctx.request,
-                headers=headers,
-                timeout=self.timeout,
-            )
+            payload = {
+                "model": ctx.request.get("model", ""),
+                "messages": ctx.request.get("messages", []),
+                "api_base": self.upstream_url,
+                "timeout": self.timeout,
+                "drop_params": True,
+                **{
+                    key: value
+                    for key, value in ctx.request.items()
+                    if key not in {"model", "messages"}
+                },
+            }
+            api_key = self._resolve_api_key(ctx)
+            if api_key:
+                payload["api_key"] = api_key
 
-            response_data = response.json()
-
-            # Pass through provider errors as-is
-            if response.status_code >= 400:
-                logger.warning(
-                    f"Upstream returned {response.status_code}: "
-                    f"{response_data.get('error', {}).get('message', 'unknown')}"
-                )
-                return StepResult(
-                    action="short_circuit",
-                    response=response_data,
-                    status_code=response.status_code,
-                )
+            raw_response = await litellm.acompletion(**payload)
+            response_data = self._to_dict_response(raw_response)
 
             # Estimate cost from usage (for budget tracking)
             usage = response_data.get("usage", {})
@@ -82,30 +95,47 @@ class ForwardStep(BaseStep):
             return StepResult(
                 action="short_circuit",
                 response=response_data,
-                status_code=response.status_code,
+                status_code=200,
             )
 
-        except httpx.TimeoutException:
-            logger.error(f"Upstream request timed out after {self.timeout}s")
-            return StepResult(
-                action="reject",
-                error="Upstream request timed out",
-                status_code=504,
-            )
-        except httpx.ConnectError as e:
-            logger.error(f"Failed to connect to upstream: {e}")
-            return StepResult(
-                action="reject",
-                error=f"Failed to connect to upstream: {str(e)}",
-                status_code=502,
-            )
         except Exception as e:
+            status_code = getattr(e, "status_code", None) or getattr(e, "status", None)
+            if status_code:
+                message = str(e)
+                logger.warning(f"LiteLLM upstream error ({status_code}): {message}")
+                return StepResult(
+                    action="short_circuit",
+                    response={
+                        "error": {
+                            "message": message,
+                            "type": "upstream_error",
+                        }
+                    },
+                    status_code=int(status_code),
+                )
+
+            if "timeout" in str(e).lower():
+                logger.error(f"Upstream request timed out after {self.timeout}s")
+                return StepResult(
+                    action="reject",
+                    error="Upstream request timed out",
+                    status_code=504,
+                )
+            if "connect" in str(e).lower() or "connection" in str(e).lower():
+                logger.error(f"Failed to connect to upstream: {e}")
+                return StepResult(
+                    action="reject",
+                    error=f"Failed to connect to upstream: {str(e)}",
+                    status_code=502,
+                )
+
             logger.error(f"Forward step failed: {e}", exc_info=True)
             return StepResult(
                 action="reject",
                 error=f"Internal proxy error: {str(e)}",
                 status_code=500,
             )
+
 
     def _estimate_cost(self, model: str, prompt_tokens: int, completion_tokens: int) -> float:
         """Rough cost estimation based on model.

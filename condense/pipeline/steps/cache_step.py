@@ -17,6 +17,10 @@ class CacheStep(BaseStep):
     After a cache miss + upstream response, the ForwardStep stores into cache
     via a background task — this step only handles lookup.
     """
+    name = "cache"
+    can_short_circuit = True
+    reads = frozenset({"request"})
+    writes = frozenset({"metadata:cache_key", "cache_state"})
 
     def __init__(self, config: dict, cache_backend: CacheBackend):
         super().__init__(config)
