@@ -1,5 +1,8 @@
 """Integration tests for server routes."""
 
+import asyncio
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 from condense.server.app import create_app
@@ -103,7 +106,7 @@ class TestChatCompletionsRoute:
         assert "x-condense-original-model" in resp.headers
 
     def test_cache_hit_on_second_request(self, client, monkeypatch):
-        """Second identical request returns cache hit."""
+        """Second identical request returns cache hit with single-digit-ms latency."""
         response_data = {
             "id": "chatcmpl-123",
             "choices": [{"message": {"content": "Hi"}}],
@@ -113,6 +116,8 @@ class TestChatCompletionsRoute:
 
         async def fake_acompletion(**kwargs):
             call_count["n"] += 1
+            # Simulate real upstream delay; cache hit should bypass this path.
+            await asyncio.sleep(0.03)
             return response_data
 
         monkeypatch.setattr(
@@ -127,15 +132,23 @@ class TestChatCompletionsRoute:
         }
 
         # First request — cache miss
+        start = time.perf_counter()
         resp1 = client.post("/v1/chat/completions", json=request_body)
+        miss_latency_ms = (time.perf_counter() - start) * 1000
         assert resp1.status_code == 200
         assert resp1.headers.get("x-condense-cache-hit") == "false"
 
         # Second request — cache hit
+        start = time.perf_counter()
         resp2 = client.post("/v1/chat/completions", json=request_body)
+        hit_latency_ms = (time.perf_counter() - start) * 1000
         assert resp2.status_code == 200
         assert resp2.headers.get("x-condense-cache-hit") == "true"
         assert call_count["n"] == 1
+        assert hit_latency_ms < 10, (
+            f"Expected cache-hit latency to be single-digit milliseconds, got {hit_latency_ms:.2f}ms "
+            f"(cache miss was {miss_latency_ms:.2f}ms)"
+        )
 
     def test_invalid_json(self, client):
         """Invalid JSON body returns 400."""
