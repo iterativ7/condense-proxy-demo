@@ -1,0 +1,136 @@
+{
+  "cache": {
+    "cache_hit_count": 0,
+    "cache_hit_rate": 0.0,
+    "cache_miss_count": 49,
+    "cache_observed_count": 49,
+    "cache_types": {
+      "none": 49
+    }
+  },
+  "cost": {
+    "baseline_cost": 7.656375,
+    "configured": true,
+    "cost_savings_pct": 28.755,
+    "cost_savings_usd": 2.201625,
+    "currency": "USD",
+    "price_input_per_1k": 0.075,
+    "price_output_per_1k": 0.3,
+    "prime_cost": 0.0,
+    "proxy_cost": 5.45475,
+    "proxy_cost_with_prime": 5.45475
+  },
+  "errors": {
+    "baseline_error_count": 1,
+    "baseline_non_2xx_count": 0,
+    "proxy_error_count": 1,
+    "proxy_non_2xx_count": 0
+  },
+  "latency": {
+    "baseline": {
+      "count": 49,
+      "max": 264776.49,
+      "mean": 99291.824,
+      "min": 27759.016,
+      "p50": 84209.979,
+      "p95": 212318.901,
+      "p99": 243679.499
+    },
+    "baseline_median_latency_ms": 84209.979,
+    "latency_delta_ms": -33864.085,
+    "latency_delta_percent": -40.214,
+    "p50_savings_pct": 40.214,
+    "p50_speedup_factor": 1.673,
+    "paired_delta_ms_mean": -27217.295,
+    "paired_delta_ms_p50": -8075.317,
+    "proxy": {
+      "count": 49,
+      "max": 223289.916,
+      "mean": 71519.544,
+      "min": 22042.178,
+      "p50": 50345.894,
+      "p95": 177174.116,
+      "p99": 221509.182
+    },
+    "proxy_cache_hit": {
+      "count": 0,
+      "max": null,
+      "mean": null,
+      "min": null,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "proxy_cache_miss": {
+      "count": 50,
+      "max": 300008.756,
+      "mean": 76089.328,
+      "min": 22042.178,
+      "p50": 50417.326,
+      "p95": 203126.482,
+      "p99": 262416.524
+    },
+    "proxy_median_latency_ms": 50345.894
+  },
+  "quality": {
+    "agreement_rate_proxy_vs_baseline": 0.8333,
+    "baseline_quality_pass_rate": 0.92,
+    "proxy_pass_rate_on_cache_hits": null,
+    "proxy_pass_rate_on_cache_misses": 0.78,
+    "proxy_quality_pass_rate": 0.78,
+    "quality_delta": -0.14
+  },
+  "run": {
+    "baseline_model": "gemma3:4b",
+    "baseline_url": "http://127.0.0.1:11434/v1/chat/completions",
+    "case_count": 50,
+    "completed_at": "2026-05-10T09:29:56.610662+00:00",
+    "dataset": "benchmarks\\datasets\\gsm8k_test_50.jsonl",
+    "out_dir": "benchmarks\\runs\\local-minimal-gemma-50",
+    "preset_label": "Minimal (gemma3:4b, 50 cases)",
+    "price_input_per_1k": 0.075,
+    "price_output_per_1k": 0.3,
+    "proxy_model": "ollama/gemma3:4b",
+    "proxy_url": "http://127.0.0.1:8080/v1/chat/completions",
+    "started_at": "2026-05-10T07:00:25.963126+00:00"
+  },
+  "tokens": {
+    "baseline_median_total_tokens": 514.5,
+    "generation_savings": {
+      "cache_hit_count": 0,
+      "completion_tokens_avoided_by_cache_est": 0,
+      "completion_tokens_savings_pct_est": 29.955,
+      "notes": "Cache-hit rows are estimated to avoid generating the baseline's completion_tokens. 'savings_pct_est' subtracts both proxy generations on cache misses and any priming generations.",
+      "proxy_generated_completion_tokens_excl_cache": 17287
+    },
+    "paired_delta": {
+      "max_proxy_minus_baseline": 331,
+      "mean_proxy_minus_baseline": -128.5,
+      "min_proxy_minus_baseline": -878,
+      "p50_proxy_minus_baseline": -71.5
+    },
+    "prime_overhead": {
+      "prime_call_count": 0,
+      "prime_input_tokens": 0,
+      "prime_latency_ms_total": 0,
+      "prime_output_tokens": 0,
+      "prime_total_tokens": 0
+    },
+    "proxy_median_total_tokens": 320.5,
+    "token_delta": -194,
+    "token_delta_percent": -37.707,
+    "token_metrics_available": true,
+    "totals": {
+      "baseline_input_tokens": 3365,
+      "baseline_output_tokens": 24680,
+      "baseline_total_tokens": 28045,
+      "input_savings_pct": -6.449,
+      "output_savings_pct": 29.955,
+      "proxy_input_tokens": 3582,
+      "proxy_output_tokens": 17287,
+      "proxy_total_tokens": 20869,
+      "total_savings_pct": 25.587
+    },
+    "valid_token_pair_count": 48
+  }
+}

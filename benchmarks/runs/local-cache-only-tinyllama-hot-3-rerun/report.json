@@ -1,0 +1,47 @@
+{
+  "cache": {
+    "cache_hit_count": 3,
+    "cache_hit_rate": 1.0,
+    "cache_miss_count": 0,
+    "cache_observed_count": 3,
+    "cache_types": {
+      "exact": 3
+    }
+  },
+  "errors": {
+    "baseline_error_count": 0,
+    "baseline_non_2xx_count": 0,
+    "proxy_error_count": 0,
+    "proxy_non_2xx_count": 0
+  },
+  "latency": {
+    "baseline_median_latency_ms": 5516.472,
+    "latency_delta_ms": -5511.041,
+    "latency_delta_percent": -99.902,
+    "proxy_median_latency_ms": 5.431
+  },
+  "quality": {
+    "baseline_quality_pass_rate": 0.0,
+    "proxy_quality_pass_rate": 0.0,
+    "quality_delta": 0.0
+  },
+  "run": {
+    "baseline_model": "tinyllama:latest",
+    "baseline_url": "http://127.0.0.1:11434/v1/chat/completions",
+    "case_count": 3,
+    "completed_at": "2026-05-09T20:02:31.417639+00:00",
+    "dataset": "benchmarks\\datasets\\gsm8k_test_5.jsonl",
+    "out_dir": "benchmarks\\runs\\local-cache-only-tinyllama-hot-3-rerun",
+    "proxy_model": "ollama/tinyllama:latest",
+    "proxy_url": "http://127.0.0.1:8080/v1/chat/completions",
+    "started_at": "2026-05-09T20:01:51.213956+00:00"
+  },
+  "tokens": {
+    "baseline_median_total_tokens": 164.0,
+    "proxy_median_total_tokens": 176.0,
+    "token_delta": 12,
+    "token_delta_percent": 7.317,
+    "token_metrics_available": true,
+    "valid_token_pair_count": 3
+  }
+}

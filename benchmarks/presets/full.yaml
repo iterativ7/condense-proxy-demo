@@ -1,0 +1,80 @@
+# Benchmark preset: production-like — cache + provider-cache injection + routing + budget.
+# Uses generous budget limits so paired latency runs rarely reject (tune for your dataset).
+#
+# Local Ollama note: routing targets use LiteLLM-style model ids (`ollama/...`). If the routed
+# model equals the request model, routing is a no-op but stays enabled for scheduler parity.
+# For OpenAI-style prod benchmarking, point upstream at https://api.openai.com/v1 and swap these
+# rule targets (e.g. gpt-4o-mini) to match your account.
+
+upstream:
+  url: "http://127.0.0.1:11434"
+  timeout_seconds: 300
+
+deployment:
+  mode: "standalone"
+  host: "127.0.0.1"
+  port: 8080
+
+optimizations:
+  - id: "exact_cache"
+    type: "cache"
+    enabled: true
+    config:
+      exact:
+        enabled: true
+        backend: "memory"
+        max_size: 10000
+        ttl_seconds: 3600
+      non_deterministic: "skip"
+
+  - id: "provider_cache"
+    type: "provider_cache"
+    enabled: true
+    depends_on: ["exact_cache"]
+    config:
+      anthropic:
+        inject_cache_control: true
+        cache_system_prompt: true
+        cache_tools: true
+      openai:
+        enabled: true
+      deepseek:
+        enabled: true
+
+  - id: "routing"
+    type: "routing"
+    enabled: true
+    depends_on: ["provider_cache"]
+    config:
+      rules:
+        - condition: "short_messages"
+          max_chars: 500
+          model: "ollama/gemma3:4b"
+        - condition: "no_tools"
+          model: "ollama/gemma3:4b"
+
+  - id: "budget"
+    type: "budget"
+    enabled: true
+    depends_on: ["routing"]
+    config:
+      max_session_cost_usd: 100000.0
+      max_turns_per_session: 100000
+      loop_detection_window: 5
+
+redis:
+  enabled: false
+  url: "redis://127.0.0.1:6379"
+
+metrics:
+  enabled: true
+  endpoint: "/metrics"
+
+headers:
+  add_savings_headers: true
+
+failsafe:
+  on_error: "passthrough"
+  circuit_breaker:
+    threshold: 5
+    recovery_seconds: 30

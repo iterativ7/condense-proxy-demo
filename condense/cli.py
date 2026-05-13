@@ -41,11 +41,11 @@ def init(preset: str, output: str):
     preset_path = Path(__file__).parent / "config" / "presets" / f"{preset}.yaml"
     if preset_path.exists():
         shutil.copy(preset_path, output)
-        click.echo(f"✓ Generated {output} from '{preset}' preset")
+        click.echo(f"[OK] Generated {output} from '{preset}' preset")
     else:
         # Fallback: generate a default config
         _write_default_config(output, preset)
-        click.echo(f"✓ Generated {output} with '{preset}' settings")
+        click.echo(f"[OK] Generated {output} with '{preset}' settings")
 
     click.echo(f"\nNext steps:")
     click.echo(f"  1. Edit {output} to set your upstream URL and API key")
@@ -75,7 +75,7 @@ def start(config: str, port: int, host: str):
     listen_port = port or cfg.deployment.port
     listen_host = host or cfg.deployment.host
 
-    click.echo(f"🚀 Condense v{__version__} starting on {listen_host}:{listen_port}")
+    click.echo(f"Condense v{__version__} starting on {listen_host}:{listen_port}")
     click.echo(f"   Upstream: {cfg.upstream.url}")
     click.echo(f"   Mode: {cfg.deployment.mode}")
 

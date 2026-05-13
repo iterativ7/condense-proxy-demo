@@ -1,4 +1,4 @@
-.PHONY: install test lint format run docker-build docker-up docker-down docker-prep-integration clean
+.PHONY: install test lint format run docker-build docker-up docker-down docker-prep-integration benchmark-dataset benchmark benchmark-lint clean
 
 install:
 	poetry install
@@ -35,6 +35,15 @@ docker-prep-integration:
 
 docker-down:
 	docker compose down
+
+benchmark:
+	poetry run python benchmarks/run_paired.py --help
+
+benchmark-dataset:
+	poetry run python benchmarks/download_dataset.py --limit 50
+
+benchmark-lint:
+	poetry run ruff check benchmarks
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

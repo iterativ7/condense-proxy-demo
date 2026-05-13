@@ -1,0 +1,136 @@
+{
+  "cache": {
+    "cache_hit_count": 49,
+    "cache_hit_rate": 1.0,
+    "cache_miss_count": 0,
+    "cache_observed_count": 49,
+    "cache_types": {
+      "exact": 49
+    }
+  },
+  "cost": {
+    "baseline_cost": 7.656375,
+    "configured": true,
+    "cost_savings_pct": 28.755,
+    "cost_savings_usd": 2.201625,
+    "currency": "USD",
+    "price_input_per_1k": 0.075,
+    "price_output_per_1k": 0.3,
+    "prime_cost": 0.0,
+    "proxy_cost": 5.45475,
+    "proxy_cost_with_prime": 5.45475
+  },
+  "errors": {
+    "baseline_error_count": 1,
+    "baseline_non_2xx_count": 0,
+    "proxy_error_count": 1,
+    "proxy_non_2xx_count": 0
+  },
+  "latency": {
+    "baseline": {
+      "count": 49,
+      "max": 231529.866,
+      "mean": 98543.985,
+      "min": 28778.139,
+      "p50": 87975.23,
+      "p95": 218375.988,
+      "p99": 230539.752
+    },
+    "baseline_median_latency_ms": 87975.23,
+    "latency_delta_ms": -87967.026,
+    "latency_delta_percent": -99.991,
+    "p50_savings_pct": 99.991,
+    "p50_speedup_factor": 10723.456,
+    "paired_delta_ms_mean": -96559.601,
+    "paired_delta_ms_p50": -87950.832,
+    "proxy": {
+      "count": 49,
+      "max": 34.437,
+      "mean": 13.296,
+      "min": 5.822,
+      "p50": 8.204,
+      "p95": 28.501,
+      "p99": 31.874
+    },
+    "proxy_cache_hit": {
+      "count": 49,
+      "max": 34.437,
+      "mean": 13.296,
+      "min": 5.822,
+      "p50": 8.204,
+      "p95": 28.501,
+      "p99": 31.874
+    },
+    "proxy_cache_miss": {
+      "count": 1,
+      "max": 300032.591,
+      "mean": 300032.591,
+      "min": 300032.591,
+      "p50": 300032.591,
+      "p95": 300032.591,
+      "p99": 300032.591
+    },
+    "proxy_median_latency_ms": 8.204
+  },
+  "quality": {
+    "agreement_rate_proxy_vs_baseline": 0.8333,
+    "baseline_quality_pass_rate": 0.92,
+    "proxy_pass_rate_on_cache_hits": 0.7959,
+    "proxy_pass_rate_on_cache_misses": 0.0,
+    "proxy_quality_pass_rate": 0.78,
+    "quality_delta": -0.14
+  },
+  "run": {
+    "baseline_model": "gemma3:4b",
+    "baseline_url": "http://127.0.0.1:11434/v1/chat/completions",
+    "case_count": 50,
+    "completed_at": "2026-05-10T15:53:29.292459+00:00",
+    "dataset": "C:\\Users\\Abcom\\Downloads\\condense-proxy-demo\\benchmarks\\datasets\\gsm8k_test_50.jsonl",
+    "out_dir": "benchmarks\\runs\\local-cache-only-gemma-50-primed",
+    "preset_label": "Cache-only, primed (gemma3:4b, 50 cases)",
+    "price_input_per_1k": 0.075,
+    "price_output_per_1k": 0.3,
+    "proxy_model": "ollama/gemma3:4b",
+    "proxy_url": "http://127.0.0.1:8080/v1/chat/completions",
+    "started_at": "2026-05-10T13:19:15.696425+00:00"
+  },
+  "tokens": {
+    "baseline_median_total_tokens": 514.5,
+    "generation_savings": {
+      "cache_hit_count": 49,
+      "completion_tokens_avoided_by_cache_est": 23532,
+      "completion_tokens_savings_pct_est": 100.0,
+      "notes": "Cache-hit rows are estimated to avoid generating the baseline's completion_tokens. 'savings_pct_est' subtracts both proxy generations on cache misses and any priming generations.",
+      "proxy_generated_completion_tokens_excl_cache": 0
+    },
+    "paired_delta": {
+      "max_proxy_minus_baseline": 331,
+      "mean_proxy_minus_baseline": -128.5,
+      "min_proxy_minus_baseline": -878,
+      "p50_proxy_minus_baseline": -71.5
+    },
+    "prime_overhead": {
+      "prime_call_count": 0,
+      "prime_input_tokens": 0,
+      "prime_latency_ms_total": 0,
+      "prime_output_tokens": 0,
+      "prime_total_tokens": 0
+    },
+    "proxy_median_total_tokens": 320.5,
+    "token_delta": -194,
+    "token_delta_percent": -37.707,
+    "token_metrics_available": true,
+    "totals": {
+      "baseline_input_tokens": 3365,
+      "baseline_output_tokens": 24680,
+      "baseline_total_tokens": 28045,
+      "input_savings_pct": -6.449,
+      "output_savings_pct": 29.955,
+      "proxy_input_tokens": 3582,
+      "proxy_output_tokens": 17287,
+      "proxy_total_tokens": 20869,
+      "total_savings_pct": 25.587
+    },
+    "valid_token_pair_count": 48
+  }
+}
