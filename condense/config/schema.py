@@ -94,7 +94,7 @@ class BudgetConfig(BaseModel):
 
 class OptimizationEntry(BaseModel):
     id: str
-    type: Literal["cache", "provider_cache", "routing", "budget"]
+    type: str  # extensible — any registered step type
     enabled: bool = True
     stage: Literal["both", "forward", "backward"] = "both"
     depends_on: list[str] = Field(default_factory=list)
@@ -179,8 +179,15 @@ class CondenseConfig(BaseModel):
 
         return self
 
+    def compression_config(self) -> CompressionConfig:
+        entry = self.optimization_entry("compression")
+        if entry is None:
+            return CompressionConfig(enabled=False)
+        cfg = CompressionConfig.model_validate(entry.config)
+        return cfg.model_copy(update={"enabled": entry.enabled})
+
     def optimization_entry(
-        self, optimization_type: Literal["cache", "provider_cache", "routing", "budget"]
+        self, optimization_type: str,
     ) -> OptimizationEntry | None:
         for entry in self.optimizations:
             if entry.type == optimization_type:

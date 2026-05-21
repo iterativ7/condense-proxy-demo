@@ -41,6 +41,16 @@ optimizations:
       #   router_type: "bert"  # bert (offline ML) | mf | smallest_llm | largest_llm
       rules: []
 
+  - id: "compression"
+    type: "compression"
+    enabled: false
+    depends_on: ["exact_cache"]
+    config:
+      compressor_type: "fusion"
+      fusion:
+        aggressive: true
+        enable_rewind: false
+
   - id: "budget"
     type: "budget"
     enabled: true
