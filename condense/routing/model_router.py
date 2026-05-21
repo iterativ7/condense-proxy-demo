@@ -1,11 +1,19 @@
-"""ML-based model routing via LLMRouter.
+"""ML-based model routing.
 
 Routes requests to strong or weak models based on query complexity analysis.
-Supports heuristic strategies (smallest_llm, largest_llm) out of the box,
-and trained ML strategies when a config_path is provided.
+Supports two backends:
 
-LLMRouter (llmrouter-lib) is an optional dependency — the router gracefully
-degrades with a warning when the library is not installed.
+1. **routellm** (lm-sys/RouteLLM) — ships with pre-trained routers (``bert``,
+   ``mf``, ``causal_llm``, ``sw_ranking``) that classify query complexity
+   locally. ``bert`` runs fully offline; others may require an OpenAI API key
+   for embeddings.  Install with ``pip install routellm``.
+
+2. **llmrouter** (llmrouter-lib) — heuristic strategies (``smallest_llm``,
+   ``largest_llm``) and trained ML strategies.
+   Install with ``pip install llmrouter-lib``.
+
+Both backends are optional — the router gracefully degrades with a warning
+when neither library is installed.
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ import contextlib
 import io
 import json
 import logging
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -22,8 +31,13 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_HEURISTIC_ROUTERS = frozenset({"smallest_llm", "largest_llm"})
+_LLMROUTER_HEURISTICS = frozenset({"smallest_llm", "largest_llm"})
+_ROUTELLM_STRATEGIES = frozenset({"bert", "mf", "causal_llm", "sw_ranking", "random"})
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _messages_to_query(messages: list[dict[str, Any]], max_chars: int = 16_000) -> str:
     """Extract a text query from chat messages for the router to evaluate.
@@ -79,65 +93,104 @@ def _write_heuristic_bundle(strong: str, weak: str) -> str:
     return str(yaml_path.resolve())
 
 
-class ModelRouter:
-    """Cost-aware model router wrapping LLMRouter.
+# ---------------------------------------------------------------------------
+# RouteLLM backend (lm-sys)
+# ---------------------------------------------------------------------------
 
-    At each request the router's ``route_single`` method chooses between
-    strong and weak models based on query complexity. Heuristic routers
-    (``smallest_llm``, ``largest_llm``) work with only strong/weak model
-    names. Trained strategies require a ``config_path`` to a valid
-    LLMRouter YAML.
-
-    Parameters
-    ----------
-    strong : str
-        LiteLLM model identifier for the strong/expensive model.
-    weak : str
-        LiteLLM model identifier for the weak/cheap model.
-    threshold : float
-        Routing threshold (strategy-dependent, typically 0.0–1.0).
-    router_type : str
-        LLMRouter strategy name (e.g. ``"smallest_llm"``, ``"largest_llm"``).
-    config_path : str or None
-        Path to a LLMRouter YAML config (required for trained strategies).
-    """
+class _RouteLLMBackend:
+    """Wraps lm-sys/RouteLLM Controller for query-complexity routing."""
 
     def __init__(
         self,
-        strong: str = "gpt-4o",
-        weak: str = "gpt-4o-mini",
-        threshold: float = 0.5,
-        router_type: str = "smallest_llm",
-        config_path: str | None = None,
+        router_type: str,
+        strong: str,
+        weak: str,
+        threshold: float,
     ):
+        self.router_type = router_type
         self.strong = strong
         self.weak = weak
         self.threshold = threshold
-        self.router_type = router_type
-        self.config_path = config_path
-        self._key_to_litellm = {"weak": weak, "strong": strong}
-        self._router = self._load_router()
+        self._controller = self._load()
 
     @property
     def available(self) -> bool:
-        """Whether the underlying LLMRouter loaded successfully."""
+        return self._controller is not None
+
+    def _load(self) -> Any:
+        try:
+            # RouteLLM eagerly creates an OpenAI client at import time;
+            # make sure it doesn't crash if the env var is absent.
+            _orig = os.environ.get("OPENAI_API_KEY")
+            if not _orig:
+                os.environ["OPENAI_API_KEY"] = "sk-placeholder"
+            try:
+                from routellm.controller import Controller  # type: ignore[import-untyped]
+            finally:
+                if not _orig:
+                    os.environ.pop("OPENAI_API_KEY", None)
+
+            controller = Controller(
+                routers=[self.router_type],
+                strong_model=self.strong,
+                weak_model=self.weak,
+            )
+            logger.info(
+                "RouteLLM backend loaded (strategy=%s)", self.router_type
+            )
+            return controller
+        except ImportError:
+            logger.debug("routellm package not installed")
+            return None
+        except Exception as exc:
+            logger.warning("RouteLLM load failed: %s", exc)
+            return None
+
+    def route(self, query: str) -> Optional[str]:
+        """Return the model name chosen by RouteLLM, or None on failure."""
+        if self._controller is None:
+            return None
+        try:
+            return self._controller.route(
+                prompt=query,
+                threshold=self.threshold,
+                router=self.router_type,
+            )
+        except Exception as exc:
+            logger.warning("[routellm] routing error: %s", exc)
+            return None
+
+
+# ---------------------------------------------------------------------------
+# LLMRouter backend (llmrouter-lib)
+# ---------------------------------------------------------------------------
+
+class _LLMRouterBackend:
+    """Wraps ulab-uiuc/LLMRouter for heuristic and trained strategies."""
+
+    def __init__(
+        self,
+        router_type: str,
+        strong: str,
+        weak: str,
+        config_path: str | None,
+    ):
+        self.router_type = router_type
+        self.strong = strong
+        self.weak = weak
+        self.config_path = config_path
+        self._key_to_litellm = {"weak": weak, "strong": strong}
+        self._router = self._load()
+
+    @property
+    def available(self) -> bool:
         return self._router is not None
 
-    def _load_router(self) -> Any:
-        """Attempt to load the LLMRouter backend.
-
-        Returns None (with a warning) if:
-        - llmrouter-lib is not installed
-        - config_path is missing for trained strategies
-        - LLMRouter initialization fails
-        """
+    def _load(self) -> Any:
         try:
             from llmrouter.cli.router_inference import load_router  # type: ignore[import-untyped]
         except ImportError:
-            logger.warning(
-                "llmrouter-lib not available — model routing disabled. "
-                "Install with: pip install llmrouter-lib"
-            )
+            logger.debug("llmrouter-lib package not installed")
             return None
 
         rt = self.router_type.replace("-", "_").lower()
@@ -150,38 +203,127 @@ class ModelRouter:
                     cfg_path,
                 )
                 return None
-        elif rt in _HEURISTIC_ROUTERS:
+        elif rt in _LLMROUTER_HEURISTICS:
             cfg_path = _write_heuristic_bundle(self.strong, self.weak)
         else:
             logger.warning(
-                "router_type=%r requires config_path (YAML), or use "
-                "smallest_llm / largest_llm — model routing disabled",
+                "router_type=%r requires config_path for llmrouter-lib backend",
                 self.router_type,
             )
             return None
 
         try:
-            # LLMRouter prints to stdout during init; suppress it.
             with contextlib.redirect_stdout(io.StringIO()):
-                return load_router(self.router_type, cfg_path)
+                router = load_router(self.router_type, cfg_path)
+            logger.info(
+                "llmrouter-lib backend loaded (strategy=%s)", self.router_type
+            )
+            return router
         except Exception as exc:
-            logger.warning("LLMRouter load failed — model routing disabled: %s", exc)
+            logger.warning("llmrouter-lib load failed: %s", exc)
             return None
 
-    def _resolve_litellm_model(self, key: str) -> str:
-        """Map a router key (e.g. 'weak', 'strong') to a LiteLLM model id.
-
-        Falls back to the raw key if it doesn't match strong/weak and
-        isn't found in the router's llm_data.
-        """
+    def _resolve_model(self, key: str) -> str:
+        """Map a router key (e.g. 'weak', 'strong') to a LiteLLM model id."""
         if key in self._key_to_litellm:
             return self._key_to_litellm[key]
-        # Check llm_data from the router instance for additional model mappings
         ld = getattr(self._router, "llm_data", None) or {}
         entry = ld.get(key) if isinstance(ld, dict) else None
         if isinstance(entry, dict) and entry.get("model"):
             return str(entry["model"])
         return key
+
+    def route(self, query: str) -> Optional[str]:
+        """Return the resolved model name, or None on failure."""
+        if self._router is None:
+            return None
+        try:
+            routing = self._router.route_single({"query": query})
+            key = (
+                routing.get("model_name")
+                or routing.get("predicted_llm")
+                or routing.get("predicted_llm_name")
+            )
+            if not key:
+                return None
+            return self._resolve_model(str(key))
+        except Exception as exc:
+            logger.warning("[llmrouter] routing error: %s", exc)
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+class ModelRouter:
+    """Cost-aware model router with pluggable backends.
+
+    Automatically selects the appropriate backend based on ``router_type``:
+
+    - RouteLLM strategies (``bert``, ``mf``, ``causal_llm``, ``sw_ranking``,
+      ``random``) use the lm-sys/RouteLLM backend.
+    - LLMRouter strategies (``smallest_llm``, ``largest_llm``, or any trained
+      strategy with a ``config_path``) use the llmrouter-lib backend.
+
+    Parameters
+    ----------
+    strong : str
+        LiteLLM model identifier for the strong/expensive model.
+    weak : str
+        LiteLLM model identifier for the weak/cheap model.
+    threshold : float
+        Routing threshold — higher values route more queries to the weak
+        model.  Semantics are backend-specific.
+    router_type : str
+        Strategy name.  Determines which backend is used.
+    config_path : str or None
+        Path to a config file (required for trained llmrouter-lib strategies).
+    """
+
+    def __init__(
+        self,
+        strong: str = "gpt-4o",
+        weak: str = "gpt-4o-mini",
+        threshold: float = 0.5,
+        router_type: str = "bert",
+        config_path: str | None = None,
+    ):
+        self.strong = strong
+        self.weak = weak
+        self.threshold = threshold
+        self.router_type = router_type
+        self.config_path = config_path
+
+        rt_lower = router_type.replace("-", "_").lower()
+
+        if rt_lower in _ROUTELLM_STRATEGIES:
+            self._backend = _RouteLLMBackend(
+                router_type=rt_lower,
+                strong=strong,
+                weak=weak,
+                threshold=threshold,
+            )
+        else:
+            self._backend = _LLMRouterBackend(
+                router_type=router_type,
+                strong=strong,
+                weak=weak,
+                config_path=config_path,
+            )
+
+        if not self._backend.available:
+            logger.warning(
+                "No routing backend available for router_type=%r. "
+                "Install routellm (pip install routellm) or "
+                "llmrouter-lib (pip install llmrouter-lib).",
+                router_type,
+            )
+
+    @property
+    def available(self) -> bool:
+        """Whether the underlying routing backend loaded successfully."""
+        return self._backend.available
 
     def route(self, request: dict) -> Optional[str]:
         """Route a request to the appropriate model.
@@ -197,29 +339,20 @@ class ModelRouter:
             The LiteLLM model identifier to use, or None if routing
             could not determine a model (caller should keep original).
         """
-        if self._router is None:
+        if not self._backend.available:
             return None
 
         try:
             messages = request.get("messages", [])
             query = _messages_to_query(messages)
-            routing = self._router.route_single({"query": query})
+            chosen = self._backend.route(query)
 
-            key = (
-                routing.get("model_name")
-                or routing.get("predicted_llm")
-                or routing.get("predicted_llm_name")
-            )
-            if not key:
-                logger.warning(
-                    "[model_router] no model in routing result, keeping original"
+            if chosen:
+                logger.debug(
+                    "[model_router] routed to %s (strategy=%s)",
+                    chosen,
+                    self.router_type,
                 )
-                return None
-
-            chosen = self._resolve_litellm_model(str(key))
-            logger.debug(
-                "[model_router] routed to %s (route key=%s)", chosen, key
-            )
             return chosen
 
         except Exception as exc:

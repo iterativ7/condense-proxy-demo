@@ -24,8 +24,9 @@ redis = {version = "^5.0", optional = true}
 
 [tool.poetry.extras]
 redis = ["redis"]
-router = ["llmrouter-lib"]
-all = ["redis", "llmrouter-lib"]
+router = ["routellm"]
+router-llmrouter = ["llmrouter-lib"]
+all = ["redis", "routellm", "llmrouter-lib"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

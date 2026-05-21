@@ -58,19 +58,25 @@ class RoutingRule(BaseModel):
 
 
 class ModelRoutingConfig(BaseModel):
-    """ML-based model routing via LLMRouter.
+    """ML-based model routing.
 
     Routes requests to strong or weak models based on query complexity.
-    Heuristic strategies (smallest_llm, largest_llm) work out of the box.
-    Trained strategies require a ``config_path`` pointing to a valid LLMRouter YAML.
+    Supports two backends selected automatically by ``router_type``:
+
+    - **RouteLLM** (lm-sys): ``bert``, ``mf``, ``causal_llm``, ``sw_ranking``,
+      ``random``.  ``bert`` runs fully offline with a pre-trained classifier.
+      Install with ``pip install routellm``.
+    - **LLMRouter** (llmrouter-lib): ``smallest_llm``, ``largest_llm``, or
+      trained strategies with a ``config_path``.
+      Install with ``pip install llmrouter-lib``.
     """
 
     enabled: bool = False
     strong: str = "gpt-4o"
     weak: str = "gpt-4o-mini"
     threshold: float = 0.5
-    router_type: str = "smallest_llm"  # "smallest_llm" | "largest_llm" | trained strategy
-    config_path: Optional[str] = None  # required for trained strategies
+    router_type: str = "bert"  # bert | mf | causal_llm | sw_ranking | smallest_llm | largest_llm
+    config_path: Optional[str] = None  # required for trained llmrouter-lib strategies
 
 
 class RoutingConfig(BaseModel):
