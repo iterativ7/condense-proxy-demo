@@ -57,9 +57,26 @@ class RoutingRule(BaseModel):
     model: str
 
 
+class ModelRoutingConfig(BaseModel):
+    """ML-based model routing via LLMRouter.
+
+    Routes requests to strong or weak models based on query complexity.
+    Heuristic strategies (smallest_llm, largest_llm) work out of the box.
+    Trained strategies require a ``config_path`` pointing to a valid LLMRouter YAML.
+    """
+
+    enabled: bool = False
+    strong: str = "gpt-4o"
+    weak: str = "gpt-4o-mini"
+    threshold: float = 0.5
+    router_type: str = "smallest_llm"  # "smallest_llm" | "largest_llm" | trained strategy
+    config_path: Optional[str] = None  # required for trained strategies
+
+
 class RoutingConfig(BaseModel):
     enabled: bool = False
     rules: list[RoutingRule] = Field(default_factory=list)
+    model_routing: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
 
 
 class BudgetConfig(BaseModel):

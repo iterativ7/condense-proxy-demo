@@ -42,6 +42,17 @@ optimizations:
     enabled: false
     depends_on: ["provider_cache"]
     config:
+      # ML-based model routing (requires: pip install llmrouter-lib)
+      # Routes requests to strong or weak models based on query complexity.
+      # model_routing:
+      #   enabled: true
+      #   strong: "gpt-4o"
+      #   weak: "gpt-4o-mini"
+      #   threshold: 0.5
+      #   router_type: "smallest_llm"  # smallest_llm | largest_llm | trained
+      #   # config_path: "/path/to/router.yaml"  # for trained strategies
+
+      # Rule-based routing (no extra dependencies required)
       rules:
         - condition: "short_messages"
           max_chars: 500
