@@ -32,6 +32,13 @@ optimizations:
     enabled: false
     depends_on: ["provider_cache"]
     config:
+      # ML-based model routing (pip install routellm or llmrouter-lib)
+      # model_routing:
+      #   enabled: true
+      #   strong: "gpt-4o"
+      #   weak: "gpt-4o-mini"
+      #   threshold: 0.5
+      #   router_type: "bert"  # bert (offline ML) | mf | smallest_llm | largest_llm
       rules: []
 
   - id: "budget"
