@@ -7,7 +7,7 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Header, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from condense.cache.key import compute_cache_key
 from condense.config.loader import load_config
@@ -21,6 +21,190 @@ from condense.utils.hashing import short_hash
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _extract_usage_metrics(response_payload: Optional[dict]) -> tuple[int, int, int]:
+    """Extract usage token counters from an upstream/cached response payload."""
+    if not isinstance(response_payload, dict):
+        return 0, 0, 0
+
+    usage = response_payload.get("usage", {})
+    if not isinstance(usage, dict):
+        return 0, 0, 0
+
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    total_tokens = usage.get("total_tokens")
+
+    if total_tokens is None:
+        total_tokens = prompt_tokens + completion_tokens
+
+    return prompt_tokens, completion_tokens, int(total_tokens)
+
+
+def _build_dashboard_html() -> str:
+    """Build a lightweight dashboard page that reads /metrics/summary."""
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Condense Savings Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0b1020;
+      --card: #151c33;
+      --text: #f4f6ff;
+      --muted: #a3acc4;
+      --accent: #4f8cff;
+      --ok: #27c080;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: linear-gradient(180deg, #090e1c, #0f172a);
+      color: var(--text);
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 30px;
+      font-weight: 700;
+    }
+    .subtitle {
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: var(--card);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 8px 25px rgba(0, 0, 0, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .label {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .value {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+    }
+    .value.large {
+      font-size: 36px;
+    }
+    .value.accent {
+      color: var(--accent);
+    }
+    .value.ok {
+      color: var(--ok);
+    }
+    .footnote {
+      margin-top: 18px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .status {
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <h1>Condense Savings Dashboard</h1>
+    <div class="subtitle">Live savings and usage overview (auto-refresh every 5 seconds)</div>
+    <section class="grid">
+      <article class="card">
+        <div class="label">Total USD Saved</div>
+        <div id="totalSavingsUsd" class="value large ok">$0.0000</div>
+      </article>
+      <article class="card">
+        <div class="label">Total Tokens Saved (Estimate)</div>
+        <div id="totalTokensSaved" class="value large accent">0</div>
+      </article>
+      <article class="card">
+        <div class="label">Total Requests</div>
+        <div id="totalRequests" class="value">0</div>
+      </article>
+      <article class="card">
+        <div class="label">Cache Hit Rate</div>
+        <div id="cacheHitRate" class="value">0%</div>
+      </article>
+      <article class="card">
+        <div class="label">Total Prompt Tokens</div>
+        <div id="totalPromptTokens" class="value">0</div>
+      </article>
+      <article class="card">
+        <div class="label">Total Completion Tokens</div>
+        <div id="totalCompletionTokens" class="value">0</div>
+      </article>
+      <article class="card">
+        <div class="label">Total Tokens Processed</div>
+        <div id="totalTokens" class="value">0</div>
+      </article>
+      <article class="card">
+        <div class="label">Uptime (seconds)</div>
+        <div id="uptimeSeconds" class="value">0</div>
+      </article>
+    </section>
+    <div id="status" class="status">Loading...</div>
+    <div class="footnote">Data source: <code>/metrics/summary</code></div>
+  </main>
+  <script>
+    function formatNumber(value) {
+      return new Intl.NumberFormat("en-US").format(value);
+    }
+
+    function setText(id, text) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = text;
+    }
+
+    async function refreshSummary() {
+      const status = document.getElementById("status");
+      try {
+        const res = await fetch("/metrics/summary", { cache: "no-store" });
+        if (!res.ok) {
+          throw new Error("HTTP " + res.status);
+        }
+        const data = await res.json();
+        const totals = data.totals || {};
+        const rates = data.rates || {};
+
+        setText("totalSavingsUsd", "$" + (Number(totals.total_savings_usd || 0)).toFixed(4));
+        setText("totalTokensSaved", formatNumber(Number(totals.total_tokens_saved_estimate || 0)));
+        setText("totalRequests", formatNumber(Number(totals.total_requests || 0)));
+        setText("cacheHitRate", (Number(rates.cache_hit_rate || 0)).toFixed(2) + "%");
+        setText("totalPromptTokens", formatNumber(Number(totals.total_prompt_tokens || 0)));
+        setText("totalCompletionTokens", formatNumber(Number(totals.total_completion_tokens || 0)));
+        setText("totalTokens", formatNumber(Number(totals.total_tokens || 0)));
+        setText("uptimeSeconds", formatNumber(Number(data.uptime_seconds || 0)));
+        status.textContent = "Last updated: " + new Date().toLocaleTimeString();
+      } catch (err) {
+        status.textContent = "Failed to refresh metrics: " + err.message;
+      }
+    }
+
+    refreshSummary();
+    setInterval(refreshSummary, 5000);
+  </script>
+</body>
+</html>
+"""
 
 
 @router.post("/v1/chat/completions")
@@ -89,10 +273,16 @@ async def chat_completions(
     # Record metrics
     metrics = getattr(app.state, "metrics", None)
     if metrics:
+        prompt_tokens, completion_tokens, total_tokens = _extract_usage_metrics(result.response)
+        tokens_saved_estimate = total_tokens if ctx.cache_hit else 0
         metrics.record_request(
             cache_hit=ctx.cache_hit,
             savings_usd=ctx.total_savings_usd,
             cost_usd=ctx.metadata.get("estimated_cost", 0.0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            tokens_saved_estimate=tokens_saved_estimate,
             routed=ctx.routed_model is not None,
             rejected=result.action == "reject",
             latency_ms=latency_ms,
@@ -206,3 +396,60 @@ async def metrics(request: Request):
         render_prometheus_metrics(tracker),
         media_type="text/plain; version=0.0.4",
     )
+
+
+@router.get("/metrics/summary")
+async def metrics_summary(request: Request):
+    """Structured metrics summary endpoint for dashboards and UIs."""
+    tracker = getattr(request.app.state, "metrics", None)
+    if tracker is None:
+        return {
+            "totals": {
+                "total_requests": 0,
+                "cache_hits": 0,
+                "cache_misses": 0,
+                "total_savings_usd": 0.0,
+                "total_cost_usd": 0.0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "total_tokens": 0,
+                "total_tokens_saved_estimate": 0,
+                "requests_routed": 0,
+                "requests_rejected": 0,
+                "pipeline_errors": 0,
+            },
+            "rates": {
+                "cache_hit_rate": 0.0,
+                "avg_savings_per_request_usd": 0.0,
+            },
+            "uptime_seconds": 0.0,
+        }
+
+    snap = tracker.snapshot()
+    return {
+        "totals": {
+            "total_requests": snap.total_requests,
+            "cache_hits": snap.cache_hits,
+            "cache_misses": snap.cache_misses,
+            "total_savings_usd": round(snap.total_savings_usd, 6),
+            "total_cost_usd": round(snap.total_cost_usd, 6),
+            "total_prompt_tokens": snap.total_prompt_tokens,
+            "total_completion_tokens": snap.total_completion_tokens,
+            "total_tokens": snap.total_tokens,
+            "total_tokens_saved_estimate": snap.total_tokens_saved_estimate,
+            "requests_routed": snap.requests_routed,
+            "requests_rejected": snap.requests_rejected,
+            "pipeline_errors": snap.pipeline_errors,
+        },
+        "rates": {
+            "cache_hit_rate": round(tracker.cache_hit_rate, 2),
+            "avg_savings_per_request_usd": round(tracker.avg_savings_per_request_usd, 6),
+        },
+        "uptime_seconds": round(snap.uptime_seconds, 1),
+    }
+
+
+@router.get("/dashboard")
+async def dashboard():
+    """Simple built-in savings dashboard."""
+    return HTMLResponse(_build_dashboard_html())

@@ -13,6 +13,10 @@ class MetricsSnapshot:
     cache_misses: int = 0
     total_savings_usd: float = 0.0
     total_cost_usd: float = 0.0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    total_tokens_saved_estimate: int = 0
     requests_routed: int = 0
     requests_rejected: int = 0
     pipeline_errors: int = 0
@@ -30,6 +34,10 @@ class MetricsTracker:
         self._cache_misses = 0
         self._total_savings_usd = 0.0
         self._total_cost_usd = 0.0
+        self._total_prompt_tokens = 0
+        self._total_completion_tokens = 0
+        self._total_tokens = 0
+        self._total_tokens_saved_estimate = 0
         self._requests_routed = 0
         self._requests_rejected = 0
         self._pipeline_errors = 0
@@ -40,6 +48,10 @@ class MetricsTracker:
         cache_hit: bool = False,
         savings_usd: float = 0.0,
         cost_usd: float = 0.0,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        tokens_saved_estimate: int = 0,
         routed: bool = False,
         rejected: bool = False,
         latency_ms: float = 0.0,
@@ -53,6 +65,10 @@ class MetricsTracker:
                 self._cache_misses += 1
             self._total_savings_usd += savings_usd
             self._total_cost_usd += cost_usd
+            self._total_prompt_tokens += max(prompt_tokens, 0)
+            self._total_completion_tokens += max(completion_tokens, 0)
+            self._total_tokens += max(total_tokens, 0)
+            self._total_tokens_saved_estimate += max(tokens_saved_estimate, 0)
             if routed:
                 self._requests_routed += 1
             if rejected:
@@ -77,6 +93,10 @@ class MetricsTracker:
                 cache_misses=self._cache_misses,
                 total_savings_usd=self._total_savings_usd,
                 total_cost_usd=self._total_cost_usd,
+                total_prompt_tokens=self._total_prompt_tokens,
+                total_completion_tokens=self._total_completion_tokens,
+                total_tokens=self._total_tokens,
+                total_tokens_saved_estimate=self._total_tokens_saved_estimate,
                 requests_routed=self._requests_routed,
                 requests_rejected=self._requests_rejected,
                 pipeline_errors=self._pipeline_errors,
@@ -90,3 +110,10 @@ class MetricsTracker:
         if total == 0:
             return 0.0
         return (self._cache_hits / total) * 100
+
+    @property
+    def avg_savings_per_request_usd(self) -> float:
+        """Return average savings per request in USD."""
+        if self._total_requests == 0:
+            return 0.0
+        return self._total_savings_usd / self._total_requests

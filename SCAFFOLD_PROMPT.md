@@ -163,6 +163,14 @@ Request:
 }
 ```
 
+Pre-check before sending requests:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+The tags response should include the target model (for example `gemma3:4b`).
+
 Expected:
 
 - first call `200`, normal model output
