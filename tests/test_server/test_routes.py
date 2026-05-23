@@ -164,3 +164,97 @@ class TestChatCompletionsRoute:
         resp = client.get("/metrics")
         assert resp.status_code == 200
         assert "condense_requests_total" in resp.text
+
+    def test_metrics_summary_endpoint_shape(self, client):
+        """Summary endpoint returns structured JSON fields."""
+        resp = client.get("/metrics/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "totals" in data
+        assert "rates" in data
+        assert "uptime_seconds" in data
+
+        totals = data["totals"]
+        assert "total_savings_usd" in totals
+        assert "total_tokens_saved_estimate" in totals
+        assert "total_prompt_tokens" in totals
+        assert "total_completion_tokens" in totals
+        assert "total_tokens" in totals
+
+    def test_metrics_summary_counters_increase(self, client, monkeypatch):
+        """Summary counters increase after successful chat request."""
+        response_data = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "Hello!"}, "index": 0, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+        }
+
+        async def fake_acompletion(**kwargs):
+            return response_data
+
+        monkeypatch.setattr(
+            "condense.pipeline.steps.forward_step.litellm.acompletion",
+            fake_acompletion,
+        )
+
+        before = client.get("/metrics/summary").json()
+        assert before["totals"]["total_requests"] == 0
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "temperature": 0,
+            },
+        )
+        assert resp.status_code == 200
+
+        after = client.get("/metrics/summary").json()
+        assert after["totals"]["total_requests"] == 1
+        assert after["totals"]["total_prompt_tokens"] == 12
+        assert after["totals"]["total_completion_tokens"] == 8
+        assert after["totals"]["total_tokens"] == 20
+
+    def test_metrics_summary_token_savings_increase_on_cache_hit(self, client, monkeypatch):
+        """Token savings estimate grows when a request is served from cache."""
+        response_data = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "Cached reply"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+        async def fake_acompletion(**kwargs):
+            return response_data
+
+        monkeypatch.setattr(
+            "condense.pipeline.steps.forward_step.litellm.acompletion",
+            fake_acompletion,
+        )
+
+        request_body = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Token savings cache test"}],
+            "temperature": 0,
+        }
+
+        # First call warms cache; second call should be cache hit.
+        first = client.post("/v1/chat/completions", json=request_body)
+        second = client.post("/v1/chat/completions", json=request_body)
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.headers.get("x-condense-cache-hit") == "true"
+
+        summary = client.get("/metrics/summary").json()
+        assert summary["totals"]["total_requests"] == 2
+        assert summary["totals"]["total_tokens_saved_estimate"] == 15
+
+    def test_dashboard_endpoint_returns_html(self, client):
+        """Dashboard endpoint serves HTML that polls summary endpoint."""
+        resp = client.get("/dashboard")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+        assert "Condense Savings Dashboard" in resp.text
+        assert "/metrics/summary" in resp.text

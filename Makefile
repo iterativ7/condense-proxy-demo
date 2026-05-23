@@ -1,7 +1,21 @@
-.PHONY: install test lint format run docker-build docker-up docker-down docker-prep-integration clean
+.PHONY: install venv-setup start-local stop-local test lint format docker-build docker-up docker-down docker-prep-integration clean
 
 install:
 	poetry install
+
+venv-setup:
+	python3 -m venv .venv
+	PIP_INDEX_URL=https://pypi.org/simple .venv/bin/python -m pip install --upgrade pip
+	PIP_INDEX_URL=https://pypi.org/simple .venv/bin/python -m pip install -e .
+
+stop-local:
+	@PIDS=$$(lsof -ti tcp:8090); \
+	if [ -n "$$PIDS" ]; then \
+		echo "Stopping local Condense on :8090 (PID(s): $$PIDS)"; \
+		kill $$PIDS; \
+	else \
+		echo "No local Condense process listening on :8090"; \
+	fi
 
 test:
 	poetry run pytest -v
@@ -15,8 +29,8 @@ lint:
 format:
 	poetry run ruff format condense/ tests/
 
-run:
-	poetry run condense start
+start-local: venv-setup
+	.venv/bin/condense start --config condense.local.yaml
 
 init:
 	poetry run condense init
