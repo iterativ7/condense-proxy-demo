@@ -3,6 +3,7 @@ version: "3.8"
 services:
   condense:
     build: .
+    # Modular savings UI is served by the same condense container at /_ui
     ports:
       - "8080:8080"
     volumes:

@@ -3,11 +3,12 @@
 import copy
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Header, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from condense.cache.key import compute_cache_key
 from condense.config.loader import load_config
@@ -23,23 +24,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _extract_usage_metrics(response_payload: Optional[dict]) -> tuple[int, int, int]:
-    """Extract usage token counters from an upstream/cached response payload."""
-    if not isinstance(response_payload, dict):
-        return 0, 0, 0
+def _enabled_optimization_ids(config: CondenseConfig) -> list[str]:
+    """Return enabled optimization IDs from active config."""
+    return [entry.id for entry in config.optimizations if entry.enabled]
 
-    usage = response_payload.get("usage", {})
-    if not isinstance(usage, dict):
-        return 0, 0, 0
 
-    prompt_tokens = int(usage.get("prompt_tokens") or 0)
-    completion_tokens = int(usage.get("completion_tokens") or 0)
-    total_tokens = usage.get("total_tokens")
-
-    if total_tokens is None:
-        total_tokens = prompt_tokens + completion_tokens
-
-    return prompt_tokens, completion_tokens, int(total_tokens)
+def _ui_index_file(request: Request) -> Optional[Path]:
+    ui_index = getattr(request.app.state, "ui_dist_index", None)
+    if isinstance(ui_index, Path) and ui_index.exists():
+        return ui_index
+    return None
 
 
 def _build_dashboard_html() -> str:
@@ -273,20 +267,8 @@ async def chat_completions(
     # Record metrics
     metrics = getattr(app.state, "metrics", None)
     if metrics:
-        prompt_tokens, completion_tokens, total_tokens = _extract_usage_metrics(result.response)
-        tokens_saved_estimate = total_tokens if ctx.cache_hit else 0
-        metrics.record_request(
-            cache_hit=ctx.cache_hit,
-            savings_usd=ctx.total_savings_usd,
-            cost_usd=ctx.metadata.get("estimated_cost", 0.0),
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            tokens_saved_estimate=tokens_saved_estimate,
-            routed=ctx.routed_model is not None,
-            rejected=result.action == "reject",
-            latency_ms=latency_ms,
-        )
+        request_metrics = ctx.build_request_metrics(result, latency_ms)
+        metrics.record_request(**request_metrics.as_record_kwargs())
 
     # Handle reject
     if result.action == "reject":
@@ -449,7 +431,99 @@ async def metrics_summary(request: Request):
     }
 
 
+@router.get("/metrics/summary/v2")
+async def metrics_summary_v2(request: Request):
+    """UI-focused summary with per-optimization breakdown and dynamic tabs."""
+    config: CondenseConfig = getattr(request.app.state, "config", load_config())
+    enabled_tabs = _enabled_optimization_ids(config)
+    tracker = getattr(request.app.state, "metrics", None)
+
+    if tracker is None:
+        return {
+            "overall": {
+                "total_savings_usd": 0.0,
+                "total_tokens_saved_estimate": 0,
+                "total_requests": 0,
+                "uptime_seconds": 0.0,
+            },
+            "enabled_tabs": enabled_tabs,
+            "optimizations": [],
+        }
+
+    snap = tracker.snapshot()
+    optimizations = []
+    observed = dict(snap.optimization_totals)
+    for optimization_id in enabled_tabs:
+        observed.setdefault(
+            optimization_id,
+            {
+                "optimization_id": optimization_id,
+                "events": 0,
+                "total_savings_usd": 0.0,
+                "total_tokens_saved": 0,
+                "tokens_saved": 0,
+                "last_technique": None,
+                "last_action": None,
+                "last_details": {},
+            },
+        )
+
+    for optimization_id, aggregate in observed.items():
+        if optimization_id == "forward":
+            continue
+        optimizations.append(
+            {
+                "optimization_id": optimization_id,
+                "events": int(aggregate.get("events", 0)),
+                "total_savings_usd": round(float(aggregate.get("total_savings_usd", 0.0)), 6),
+                "total_tokens_saved": int(aggregate.get("total_tokens_saved", 0)),
+                "tokens_saved": int(aggregate.get("tokens_saved", aggregate.get("total_tokens_saved", 0))),
+                "last_technique": aggregate.get("last_technique"),
+                "last_action": aggregate.get("last_action"),
+                "last_details": aggregate.get("last_details") or {},
+            }
+        )
+
+    optimizations.sort(key=lambda entry: entry["optimization_id"])
+    return {
+        "overall": {
+            "total_savings_usd": round(snap.total_savings_usd, 6),
+            "total_tokens_saved_estimate": snap.total_tokens_saved_estimate,
+            "total_requests": snap.total_requests,
+            "uptime_seconds": round(snap.uptime_seconds, 1),
+        },
+        "enabled_tabs": enabled_tabs,
+        "optimizations": optimizations,
+    }
+
+
 @router.get("/dashboard")
-async def dashboard():
-    """Simple built-in savings dashboard."""
+async def dashboard(request: Request):
+    """Backward-compatible dashboard route."""
+    if _ui_index_file(request):
+        return RedirectResponse(url="/_ui")
     return HTMLResponse(_build_dashboard_html())
+
+
+@router.get("/_ui")
+async def ui_root(request: Request):
+    """Serve modular UI entrypoint if built assets are available."""
+    ui_index = _ui_index_file(request)
+    if ui_index:
+        return FileResponse(ui_index)
+    return HTMLResponse(
+        "<h1>UI build not found</h1><p>Run <code>make ui-build</code> to build the modular UI.</p>",
+        status_code=503,
+    )
+
+
+@router.get("/_ui/{path:path}")
+async def ui_spa_path(path: str, request: Request):
+    """SPA fallback for client-side UI routes."""
+    ui_index = _ui_index_file(request)
+    if ui_index:
+        return FileResponse(ui_index)
+    return HTMLResponse(
+        "<h1>UI build not found</h1><p>Run <code>make ui-build</code> to build the modular UI.</p>",
+        status_code=503,
+    )

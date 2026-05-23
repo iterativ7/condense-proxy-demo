@@ -3,9 +3,11 @@
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from condense import __version__
 from condense.cache.memory import InMemoryCache
@@ -135,6 +137,13 @@ def create_app(config_path: str = None) -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
+
+    # Mount built UI assets when available.
+    project_root = Path(__file__).resolve().parents[2]
+    ui_dist_assets = project_root / "ui" / "dist" / "assets"
+    app.state.ui_dist_index = project_root / "ui" / "dist" / "index.html"
+    if ui_dist_assets.exists():
+        app.mount("/_ui/assets", StaticFiles(directory=str(ui_dist_assets)), name="ui-assets")
 
     # Add middleware
     app.add_middleware(TimingMiddleware)

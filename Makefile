@@ -1,4 +1,4 @@
-.PHONY: install venv-setup start-local stop-local test lint format docker-build docker-up docker-down docker-prep-integration clean
+.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format docker-build docker-up docker-down docker-prep-integration clean
 
 install:
 	poetry install
@@ -7,6 +7,12 @@ venv-setup:
 	python3 -m venv .venv
 	PIP_INDEX_URL=https://pypi.org/simple .venv/bin/python -m pip install --upgrade pip
 	PIP_INDEX_URL=https://pypi.org/simple .venv/bin/python -m pip install -e .
+
+ui-install:
+	cd ui && NPM_CONFIG_REGISTRY=https://registry.npmjs.org npm install
+
+ui-build:
+	cd ui && NPM_CONFIG_REGISTRY=https://registry.npmjs.org npm install && npm run build
 
 stop-local:
 	@PIDS=$$(lsof -ti tcp:8090); \

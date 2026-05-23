@@ -1,3 +1,13 @@
+FROM node:20-alpine AS ui-builder
+
+WORKDIR /ui
+
+COPY ui/package.json ./
+RUN npm install
+
+COPY ui/ ./
+RUN npm run build
+
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
@@ -29,6 +39,7 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /app/condense ./condense
 COPY --from=builder /app/condense.default.yaml ./
+COPY --from=ui-builder /ui/dist ./ui/dist
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash condense

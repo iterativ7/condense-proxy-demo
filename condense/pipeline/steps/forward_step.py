@@ -92,10 +92,40 @@ class ForwardStep(BaseStep):
             response_data["_condense_estimated_cost"] = estimated_cost
             ctx.metadata["estimated_cost"] = estimated_cost
 
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            completion_tokens = int(usage.get("completion_tokens") or 0)
+            total_tokens = usage.get("total_tokens")
+            if total_tokens is None:
+                total_tokens = prompt_tokens + completion_tokens
+
             return StepResult(
                 action="short_circuit",
                 response=response_data,
                 status_code=200,
+                technique="forward",
+                savings_usd=0.0,
+                tokens_saved=0,
+                details={
+                    "estimated_cost": estimated_cost,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": int(total_tokens),
+                    "model": ctx.request.get("model", ""),
+                },
+                optimization_updates=[
+                    {
+                        "technique": "forward",
+                        "savings_usd": 0.0,
+                        "tokens_saved": 0,
+                        "details": {
+                            "estimated_cost": estimated_cost,
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": int(total_tokens),
+                            "model": ctx.request.get("model", ""),
+                        },
+                    }
+                ],
             )
 
         except Exception as e:
@@ -112,6 +142,20 @@ class ForwardStep(BaseStep):
                         }
                     },
                     status_code=int(status_code),
+                    technique="forward",
+                    savings_usd=0.0,
+                    tokens_saved=0,
+                    optimization_updates=[
+                        {
+                            "technique": "forward",
+                            "savings_usd": 0.0,
+                            "tokens_saved": 0,
+                            "details": {
+                                "error_type": "upstream_error",
+                                "status_code": int(status_code),
+                            },
+                        }
+                    ],
                 )
 
             if "timeout" in str(e).lower():
@@ -120,6 +164,17 @@ class ForwardStep(BaseStep):
                     action="reject",
                     error="Upstream request timed out",
                     status_code=504,
+                    technique="forward",
+                    savings_usd=0.0,
+                    tokens_saved=0,
+                    optimization_updates=[
+                        {
+                            "technique": "forward",
+                            "savings_usd": 0.0,
+                            "tokens_saved": 0,
+                            "details": {"error_type": "timeout"},
+                        }
+                    ],
                 )
             if "connect" in str(e).lower() or "connection" in str(e).lower():
                 logger.error(f"Failed to connect to upstream: {e}")
@@ -127,6 +182,17 @@ class ForwardStep(BaseStep):
                     action="reject",
                     error=f"Failed to connect to upstream: {str(e)}",
                     status_code=502,
+                    technique="forward",
+                    savings_usd=0.0,
+                    tokens_saved=0,
+                    optimization_updates=[
+                        {
+                            "technique": "forward",
+                            "savings_usd": 0.0,
+                            "tokens_saved": 0,
+                            "details": {"error_type": "connect"},
+                        }
+                    ],
                 )
 
             logger.error(f"Forward step failed: {e}", exc_info=True)
@@ -134,6 +200,17 @@ class ForwardStep(BaseStep):
                 action="reject",
                 error=f"Internal proxy error: {str(e)}",
                 status_code=500,
+                technique="forward",
+                savings_usd=0.0,
+                tokens_saved=0,
+                optimization_updates=[
+                    {
+                        "technique": "forward",
+                        "savings_usd": 0.0,
+                        "tokens_saved": 0,
+                        "details": {"error_type": "internal"},
+                    }
+                ],
             )
 
 

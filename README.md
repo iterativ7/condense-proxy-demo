@@ -38,6 +38,9 @@ curl http://127.0.0.1:8090/health/ready
 
 # Verify Ollama is up and model is available
 curl http://127.0.0.1:11434/api/tags
+
+# (Optional) Build modular UI bundle for /_ui route
+make ui-build
 ```
 
 Stop local proxy:
@@ -123,6 +126,18 @@ Resource startup is optimization-aware:
 - `upstream.url` as `api_base` (OpenAI-compatible providers, Ollama OpenAI surface, etc.)
 - API key from incoming `Authorization` header when present
 - fallback to `upstream.api_key_env` when configured
+
+## Optimization Update Contract
+
+Each optimization step can emit structured update payloads through the pipeline.
+For backward compatibility, legacy step behavior still works, but the normalized
+contract now requires each emitted update to include at least one of:
+
+- `savings_usd`
+- `tokens_saved`
+
+These updates are aggregated for the modular UI and surfaced via
+`/metrics/summary/v2` as per-optimization contributions.
 
 ## Local Ollama Example
 
@@ -227,12 +242,23 @@ Savings and dashboard endpoints:
 - `GET /dashboard`:
   - Built-in lightweight HTML dashboard with live KPI cards.
   - Auto-refreshes by polling `/metrics/summary` every 5 seconds.
+- `GET /metrics/summary/v2`:
+  - UI-focused payload for modular savings UI.
+  - Includes:
+    - `overall` consolidated savings values
+    - `enabled_tabs` from enabled optimizations
+    - `optimizations[]` per-optimization contributions/details
+- `GET /_ui`:
+  - Separate modular UI module (when built assets are present).
+  - Use `make ui-build` before loading locally.
 
 Quick check:
 
 ```bash
 curl http://127.0.0.1:8090/metrics/summary
 open http://127.0.0.1:8090/dashboard
+curl http://127.0.0.1:8090/metrics/summary/v2
+open http://127.0.0.1:8090/_ui
 ```
 
 ## Docker
