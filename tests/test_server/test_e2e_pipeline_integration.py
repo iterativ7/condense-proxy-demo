@@ -272,6 +272,167 @@ deployment:
             assert calls[0]["model"] == "gpt-4o-mini"
 
 
+def test_e2e_compression_reduces_tokens(tmp_path, monkeypatch):
+    """Compression step should compress messages before forwarding."""
+    from unittest.mock import MagicMock, patch
+    from condense.compression.base import CompressResult
+
+    mock_compressor = MagicMock()
+    mock_compressor.available = True
+    mock_compressor.compress_messages.return_value = CompressResult(
+        messages=[{"role": "user", "content": "compressed msg"}],
+        original_tokens=50,
+        compressed_tokens=30,
+        reduction_pct=40.0,
+    )
+
+    client = _make_client(
+        tmp_path,
+        """
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    config:
+      compressor_type: "fusion"
+  - id: "cache"
+    type: "cache"
+    enabled: false
+    config: {}
+  - id: "budget"
+    type: "budget"
+    enabled: false
+    config: {}
+deployment:
+  port: 8080
+""",
+    )
+
+    calls: list[dict] = []
+    response_data = {
+        "id": "chatcmpl-comp-1",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Compressed response"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35},
+    }
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return response_data
+
+    monkeypatch.setattr(
+        "condense.pipeline.steps.forward_step.litellm.acompletion",
+        fake_acompletion,
+    )
+
+    with patch(
+        "condense.pipeline.steps.compression_step._get_or_create_compressor",
+        return_value=mock_compressor,
+    ):
+        with client:
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": "A long verbose message here"}],
+                    "temperature": 0,
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json()["choices"][0]["message"]["content"] == "Compressed response"
+            # Verify compression technique was applied
+            assert "compression" in resp.headers.get("x-condense-techniques", "")
+            # Verify the forwarded messages were compressed
+            assert len(calls) == 1
+            assert calls[0]["messages"] == [{"role": "user", "content": "compressed msg"}]
+
+
+def test_e2e_compression_with_routing(tmp_path, monkeypatch):
+    """Compression + routing should both apply in pipeline order."""
+    from unittest.mock import MagicMock, patch
+    from condense.compression.base import CompressResult
+
+    mock_compressor = MagicMock()
+    mock_compressor.available = True
+    mock_compressor.compress_messages.return_value = CompressResult(
+        messages=[{"role": "user", "content": "compressed"}],
+        original_tokens=100,
+        compressed_tokens=50,
+        reduction_pct=50.0,
+    )
+
+    client = _make_client(
+        tmp_path,
+        """
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    config:
+      compressor_type: "fusion"
+  - id: "routing"
+    type: "routing"
+    enabled: true
+    depends_on: ["compression"]
+    config:
+      rules:
+        - condition: "short_messages"
+          max_chars: 500
+          model: "gpt-4o-mini"
+  - id: "cache"
+    type: "cache"
+    enabled: false
+    config: {}
+deployment:
+  port: 8080
+""",
+    )
+
+    calls: list[dict] = []
+    response_data = {
+        "id": "chatcmpl-cr-1",
+        "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+    }
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return response_data
+
+    monkeypatch.setattr(
+        "condense.pipeline.steps.forward_step.litellm.acompletion",
+        fake_acompletion,
+    )
+
+    with patch(
+        "condense.pipeline.steps.compression_step._get_or_create_compressor",
+        return_value=mock_compressor,
+    ):
+        with client:
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o", "messages": [{"role": "user", "content": "Hi"}], "temperature": 0},
+            )
+            assert resp.status_code == 200
+            techniques = resp.headers.get("x-condense-techniques", "")
+            assert "compression" in techniques
+            assert "routing" in techniques
+            assert calls[0]["model"] == "gpt-4o-mini"
+
+
 def test_e2e_budget_rejects_after_turn_limit(tmp_path, monkeypatch):
     """Budget optimization should reject requests after session turn cap."""
     client = _make_client(
