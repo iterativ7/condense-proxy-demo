@@ -4,9 +4,9 @@
 Usage:
     python benchmarks/compare_runs.py \
         --output benchmarks/runs/SUMMARY.md \
-        benchmarks/runs/local-minimal-gemma-50 \
-        benchmarks/runs/local-cache-only-gemma-50-primed \
-        benchmarks/runs/local-full-gemma-50
+        benchmarks/runs/gemini-minimal-suite50 \
+        benchmarks/runs/gemini-cache-only-suite50-primed \
+        benchmarks/runs/gemini-full-suite50
 """
 
 from __future__ import annotations

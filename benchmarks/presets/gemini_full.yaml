@@ -1,19 +1,14 @@
-# Benchmark preset: production-like — cache + provider-cache injection + routing + budget.
-# Uses generous budget limits so paired latency runs rarely reject (tune for your dataset).
-#
-# Local Ollama note: routing targets use LiteLLM-style model ids (`ollama/...`). If the routed
-# model equals the request model, routing is a no-op but stays enabled for scheduler parity.
-# For OpenAI-style prod benchmarking, point upstream at https://api.openai.com/v1 and swap these
-# rule targets (e.g. gpt-4o-mini) to match your account.
+# Gemini benchmark: cache + provider-cache + routing + budget.
 
 upstream:
-  url: "http://127.0.0.1:11434"
+  url: "https://generativelanguage.googleapis.com/v1beta"
   timeout_seconds: 300
+  api_key_env: "GEMINI_API_KEY"
 
 deployment:
   mode: "standalone"
   host: "127.0.0.1"
-  port: 8080
+  port: 8090
 
 optimizations:
   - id: "exact_cache"
@@ -49,9 +44,9 @@ optimizations:
       rules:
         - condition: "short_messages"
           max_chars: 500
-          model: "ollama/gemma3:4b"
+          model: "gemini/gemini-2.5-flash"
         - condition: "no_tools"
-          model: "ollama/gemma3:4b"
+          model: "gemini/gemini-2.5-flash"
 
   - id: "budget"
     type: "budget"
@@ -64,7 +59,7 @@ optimizations:
 
 redis:
   enabled: false
-  url: "redis://127.0.0.1:6379"
+  url: "redis://localhost:6379"
 
 metrics:
   enabled: true

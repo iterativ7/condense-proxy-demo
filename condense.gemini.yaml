@@ -1,0 +1,61 @@
+# Condense + Google Gemini (LiteLLM). Requires GEMINI_API_KEY in the environment.
+
+upstream:
+  url: "https://generativelanguage.googleapis.com/v1beta"
+  timeout_seconds: 300
+  api_key_env: "GEMINI_API_KEY"
+
+deployment:
+  mode: "standalone"
+  host: "127.0.0.1"
+  port: 8090
+
+optimizations:
+  - id: "exact_cache"
+    type: "cache"
+    enabled: true
+    config:
+      exact:
+        enabled: true
+        backend: "memory"
+        max_size: 10000
+        ttl_seconds: 3600
+      non_deterministic: "skip"
+
+  - id: "provider_cache"
+    type: "provider_cache"
+    enabled: false
+    depends_on: ["exact_cache"]
+    config: {}
+
+  - id: "routing"
+    type: "routing"
+    enabled: false
+    depends_on: ["provider_cache"]
+    config:
+      rules: []
+
+  - id: "budget"
+    type: "budget"
+    enabled: true
+    config:
+      max_session_cost_usd: 10.0
+      max_turns_per_session: 100
+      loop_detection_window: 5
+
+redis:
+  enabled: false
+  url: "redis://localhost:6379"
+
+metrics:
+  enabled: true
+  endpoint: "/metrics"
+
+headers:
+  add_savings_headers: true
+
+failsafe:
+  on_error: "passthrough"
+  circuit_breaker:
+    threshold: 5
+    recovery_seconds: 30

@@ -5,8 +5,8 @@ Useful for re-aggregating with newer metrics (totals, percentiles, cost,
 generation savings) without re-running the model.
 
 Examples:
-    python benchmarks/recompute_report.py benchmarks/runs/local-minimal-gemma-50
-    python benchmarks/recompute_report.py benchmarks/runs/local-minimal-gemma-50 \
+    python benchmarks/recompute_report.py benchmarks/runs/gemini-minimal-suite50
+    python benchmarks/recompute_report.py benchmarks/runs/gemini-minimal-suite50 \
         --price-input-per-1k 0.075 --price-output-per-1k 0.30 \
         --preset-label "Minimal (gemma3:4b, 50 cases)"
 """

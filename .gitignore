@@ -36,5 +36,16 @@ Thumbs.db
 # Config with secrets (user-generated, not the default)
 condense.yaml
 
+# Local secrets
+.env
+
+# Large benchmark datasets (download via benchmarks/download_llm_benchmark_datasets.py)
+benchmarks/datasets/llm_benchmarks/
+
+# Benchmark run artifacts (regenerate locally; SUMMARY.md is tracked)
+benchmarks/runs/*
+!benchmarks/runs/.gitkeep
+!benchmarks/runs/SUMMARY.md
+
 # Docker
 .docker/

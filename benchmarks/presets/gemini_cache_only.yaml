@@ -1,14 +1,14 @@
-# Benchmark preset: exact-match cache only (semantic/provider-cache/routing/budget off).
-# Restart the proxy between presets so in-memory cache state is predictable.
+# Gemini benchmark: exact-match cache only.
 
 upstream:
-  url: "http://127.0.0.1:11434"
+  url: "https://generativelanguage.googleapis.com/v1beta"
   timeout_seconds: 300
+  api_key_env: "GEMINI_API_KEY"
 
 deployment:
   mode: "standalone"
   host: "127.0.0.1"
-  port: 8080
+  port: 8090
 
 optimizations:
   - id: "exact_cache"
@@ -46,7 +46,7 @@ optimizations:
 
 redis:
   enabled: false
-  url: "redis://127.0.0.1:6379"
+  url: "redis://localhost:6379"
 
 metrics:
   enabled: true

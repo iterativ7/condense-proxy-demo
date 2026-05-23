@@ -1,1 +1,0 @@
-{"model":"ollama/gemma3:4b","messages":[{"role":"user","content":"Say exactly: pong"}],"temperature":0}
