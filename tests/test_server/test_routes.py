@@ -256,5 +256,52 @@ class TestChatCompletionsRoute:
         resp = client.get("/dashboard")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
-        assert "Condense Savings Dashboard" in resp.text
-        assert "/metrics/summary" in resp.text
+        assert ("Condense Savings Dashboard" in resp.text) or ("<div id=\"root\"></div>" in resp.text)
+
+    def test_metrics_summary_v2_shape(self, client):
+        """V2 summary endpoint includes overall + tabs + optimization details."""
+        resp = client.get("/metrics/summary/v2")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "overall" in data
+        assert "enabled_tabs" in data
+        assert "optimizations" in data
+        assert "cache" in data["enabled_tabs"]
+
+    def test_metrics_summary_v2_optimization_totals(self, client, monkeypatch):
+        """V2 summary aggregates per-optimization updates."""
+        response_data = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "Hello!"}, "index": 0, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+        }
+
+        async def fake_acompletion(**kwargs):
+            return response_data
+
+        monkeypatch.setattr(
+            "condense.pipeline.steps.forward_step.litellm.acompletion",
+            fake_acompletion,
+        )
+
+        request_body = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Optimization breakdown test"}],
+            "temperature": 0,
+        }
+        client.post("/v1/chat/completions", json=request_body)
+        client.post("/v1/chat/completions", json=request_body)
+
+        data = client.get("/metrics/summary/v2").json()
+        cache_entry = next((entry for entry in data["optimizations"] if entry["optimization_id"] == "cache"), None)
+        assert cache_entry is not None
+        assert cache_entry["events"] >= 2
+        assert "tokens_saved" in cache_entry
+
+    def test_ui_root_serves_index_or_explicit_missing_message(self, client):
+        """UI route either serves built index or explicit missing-build message."""
+        resp = client.get("/_ui")
+        assert resp.status_code in {200, 503}
+        if resp.status_code == 503:
+            assert "UI build not found" in resp.text

@@ -106,6 +106,44 @@ class RoutingStep(BaseStep):
         if target_model:
             ctx.request["model"] = target_model
             ctx.routed_model = target_model
-            return StepResult(action="next", technique="routing")
+            return StepResult(
+                action="next",
+                technique="routing",
+                savings_usd=0.0,
+                tokens_saved=0,
+                details={
+                    "from_model": original_model,
+                    "to_model": target_model,
+                    "strategy": technique_detail,
+                },
+                optimization_updates=[
+                    {
+                        "technique": "routing",
+                        "savings_usd": 0.0,
+                        "tokens_saved": 0,
+                        "details": {
+                            "from_model": original_model,
+                            "to_model": target_model,
+                            "strategy": technique_detail,
+                        },
+                    }
+                ],
+            )
 
-        return StepResult(action="next")
+        return StepResult(
+            action="next",
+            savings_usd=0.0,
+            tokens_saved=0,
+            optimization_updates=[
+                {
+                    "technique": "routing",
+                    "savings_usd": 0.0,
+                    "tokens_saved": 0,
+                    "details": {
+                        "from_model": original_model,
+                        "to_model": original_model,
+                        "strategy": "none",
+                    },
+                }
+            ],
+        )

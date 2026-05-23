@@ -21,6 +21,7 @@ class MetricsSnapshot:
     requests_rejected: int = 0
     pipeline_errors: int = 0
     uptime_seconds: float = 0.0
+    optimization_totals: dict[str, dict] = field(default_factory=dict)
 
 
 class MetricsTracker:
@@ -42,6 +43,7 @@ class MetricsTracker:
         self._requests_rejected = 0
         self._pipeline_errors = 0
         self._latencies: list[float] = []
+        self._optimization_totals: dict[str, dict] = {}
 
     def record_request(
         self,
@@ -55,6 +57,7 @@ class MetricsTracker:
         routed: bool = False,
         rejected: bool = False,
         latency_ms: float = 0.0,
+        optimization_updates: list[dict] | None = None,
     ) -> None:
         """Record metrics for a single request."""
         with self._lock:
@@ -78,6 +81,29 @@ class MetricsTracker:
                 # Keep only last 1000 latencies
                 if len(self._latencies) > 1000:
                     self._latencies = self._latencies[-1000:]
+            if optimization_updates:
+                for update in optimization_updates:
+                    optimization_id = str(update.get("optimization_id") or "unknown")
+                    aggregate = self._optimization_totals.setdefault(
+                        optimization_id,
+                        {
+                            "optimization_id": optimization_id,
+                            "events": 0,
+                            "total_savings_usd": 0.0,
+                            "total_tokens_saved": 0,
+                            "tokens_saved": 0,
+                            "last_technique": None,
+                            "last_action": None,
+                            "last_details": {},
+                        },
+                    )
+                    aggregate["events"] += 1
+                    aggregate["total_savings_usd"] += float(update.get("savings_usd") or 0.0)
+                    aggregate["total_tokens_saved"] += int(update.get("tokens_saved") or 0)
+                    aggregate["tokens_saved"] = aggregate["total_tokens_saved"]
+                    aggregate["last_technique"] = update.get("technique")
+                    aggregate["last_action"] = update.get("action")
+                    aggregate["last_details"] = dict(update.get("details") or {})
 
     def record_error(self) -> None:
         """Record a pipeline error."""
@@ -101,6 +127,9 @@ class MetricsTracker:
                 requests_rejected=self._requests_rejected,
                 pipeline_errors=self._pipeline_errors,
                 uptime_seconds=time.time() - self._start_time,
+                optimization_totals={
+                    key: value.copy() for key, value in self._optimization_totals.items()
+                },
             )
 
     @property

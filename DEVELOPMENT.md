@@ -20,6 +20,12 @@ Use the standardized local commands:
 make start-local
 ```
 
+Build modular UI assets (for `/_ui`) when needed:
+
+```bash
+make ui-build
+```
+
 Verify local Ollama is reachable and model is present:
 
 ```bash
@@ -33,12 +39,20 @@ Health checks:
 ```bash
 curl http://127.0.0.1:8090/health
 curl http://127.0.0.1:8090/health/ready
+curl http://127.0.0.1:8090/metrics/summary/v2
 ```
 
 Stop local server:
 
 ```bash
 make stop-local
+```
+
+Open UIs:
+
+```bash
+open http://127.0.0.1:8090/dashboard
+open http://127.0.0.1:8090/_ui
 ```
 
 ## Config Selection Rules
