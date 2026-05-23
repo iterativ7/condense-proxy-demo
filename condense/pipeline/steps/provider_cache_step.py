@@ -29,20 +29,76 @@ class ProviderCacheStep(BaseStep):
             # OpenAI handles prefix caching automatically — no injection needed
             # but we note the technique was considered
             if self.config.get("openai", {}).get("enabled", True):
-                return StepResult(action="next", technique="provider_cache_openai")
+                return StepResult(
+                    action="next",
+                    technique="provider_cache_openai",
+                    savings_usd=0.0,
+                    tokens_saved=0,
+                    optimization_updates=[
+                        {
+                            "technique": "provider_cache_openai",
+                            "savings_usd": 0.0,
+                            "tokens_saved": 0,
+                            "details": {"provider": "openai", "modified_fields": []},
+                        }
+                    ],
+                )
         elif provider == "deepseek":
             if self.config.get("deepseek", {}).get("enabled", True):
-                return StepResult(action="next", technique="provider_cache_deepseek")
+                return StepResult(
+                    action="next",
+                    technique="provider_cache_deepseek",
+                    savings_usd=0.0,
+                    tokens_saved=0,
+                    optimization_updates=[
+                        {
+                            "technique": "provider_cache_deepseek",
+                            "savings_usd": 0.0,
+                            "tokens_saved": 0,
+                            "details": {"provider": "deepseek", "modified_fields": []},
+                        }
+                    ],
+                )
 
-        return StepResult(action="next")
+        return StepResult(
+            action="next",
+            savings_usd=0.0,
+            tokens_saved=0,
+            optimization_updates=[
+                {
+                    "technique": "provider_cache",
+                    "savings_usd": 0.0,
+                    "tokens_saved": 0,
+                    "details": {"provider": provider, "modified_fields": []},
+                }
+            ],
+        )
 
     async def _handle_anthropic(self, ctx: PipelineContext) -> StepResult:
         """Inject cache_control for Anthropic models."""
         anthropic_config = self.config.get("anthropic", {})
         if not anthropic_config.get("inject_cache_control", True):
-            return StepResult(action="next")
+            return StepResult(
+                action="next",
+                technique="provider_cache_anthropic",
+                savings_usd=0.0,
+                tokens_saved=0,
+                optimization_updates=[
+                    {
+                        "technique": "provider_cache_anthropic",
+                        "savings_usd": 0.0,
+                        "tokens_saved": 0,
+                        "details": {
+                            "provider": "anthropic",
+                            "modified_fields": [],
+                            "reason": "cache_control_injection_disabled",
+                        },
+                    }
+                ],
+            )
 
         modified = False
+        modified_fields: list[str] = []
         messages = ctx.request.get("messages", [])
 
         # Inject cache_control on system prompt
@@ -59,12 +115,14 @@ class ProviderCacheStep(BaseStep):
                             }
                         ]
                         modified = True
+                        modified_fields.append("messages.system")
                     elif isinstance(msg.get("content"), list):
                         # Add cache_control to last text block
                         for block in reversed(msg["content"]):
                             if isinstance(block, dict) and block.get("type") == "text":
                                 block["cache_control"] = {"type": "ephemeral"}
                                 modified = True
+                                modified_fields.append("messages.system")
                                 break
                     break  # Only process first system message
 
@@ -76,9 +134,42 @@ class ProviderCacheStep(BaseStep):
                 if isinstance(last_tool, dict):
                     last_tool["cache_control"] = {"type": "ephemeral"}
                     modified = True
+                    modified_fields.append("tools.last")
 
         if modified:
             logger.debug("Injected Anthropic cache_control headers")
-            return StepResult(action="next", technique="provider_cache_anthropic")
+            return StepResult(
+                action="next",
+                technique="provider_cache_anthropic",
+                savings_usd=0.0,
+                tokens_saved=0,
+                optimization_updates=[
+                    {
+                        "technique": "provider_cache_anthropic",
+                        "savings_usd": 0.0,
+                        "tokens_saved": 0,
+                        "details": {
+                            "provider": "anthropic",
+                            "modified_fields": modified_fields,
+                        },
+                    }
+                ],
+            )
 
-        return StepResult(action="next")
+        return StepResult(
+            action="next",
+            technique="provider_cache_anthropic",
+            savings_usd=0.0,
+            tokens_saved=0,
+            optimization_updates=[
+                {
+                    "technique": "provider_cache_anthropic",
+                    "savings_usd": 0.0,
+                    "tokens_saved": 0,
+                    "details": {
+                        "provider": "anthropic",
+                        "modified_fields": [],
+                    },
+                }
+            ],
+        )

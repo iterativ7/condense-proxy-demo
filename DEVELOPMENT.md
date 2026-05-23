@@ -14,17 +14,45 @@ Run a local Condense server that accepts OpenAI-compatible chat-completions requ
 
 ## Start The Optimization Server
 
-Use an explicit config path to avoid ambiguity:
+Use the standardized local commands:
 
 ```bash
-.venv/bin/python -m condense.cli start --config condense.default.yaml --host 127.0.0.1 --port 8080
+make start-local
 ```
+
+Build modular UI assets (for `/_ui`) when needed:
+
+```bash
+make ui-build
+```
+
+Verify local Ollama is reachable and model is present:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+The response should include the model you plan to use (for example `gemma3:4b`).
 
 Health checks:
 
 ```bash
-curl http://127.0.0.1:8080/health
-curl http://127.0.0.1:8080/health/ready
+curl http://127.0.0.1:8090/health
+curl http://127.0.0.1:8090/health/ready
+curl http://127.0.0.1:8090/metrics/summary/v2
+```
+
+Stop local server:
+
+```bash
+make stop-local
+```
+
+Open UIs:
+
+```bash
+open http://127.0.0.1:8090/dashboard
+open http://127.0.0.1:8090/_ui
 ```
 
 ## Config Selection Rules

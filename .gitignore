@@ -49,3 +49,7 @@ benchmarks/runs/*
 
 # Docker
 .docker/
+
+# UI module artifacts
+ui/node_modules/
+ui/dist/

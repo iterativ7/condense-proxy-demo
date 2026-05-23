@@ -29,15 +29,24 @@ App -> Gateway -> Condense Proxy -> Model Provider
 ## Quick Start
 
 ```bash
-# Install dependencies
-poetry install
-
-# Start proxy (explicit config is safest)
-condense start --config condense.default.yaml
+# Start local proxy (includes .venv setup, uses condense.local.yaml -> 127.0.0.1:8090)
+make start-local
 
 # Health checks
-curl http://localhost:8080/health
-curl http://localhost:8080/health/ready
+curl http://127.0.0.1:8090/health
+curl http://127.0.0.1:8090/health/ready
+
+# Verify Ollama is up and model is available
+curl http://127.0.0.1:11434/api/tags
+
+# (Optional) Build modular UI bundle for /_ui route
+make ui-build
+```
+
+Stop local proxy:
+
+```bash
+make stop-local
 ```
 
 Config resolution order when `--config` is not provided:
@@ -118,6 +127,18 @@ Resource startup is optimization-aware:
 - API key from incoming `Authorization` header when present
 - fallback to `upstream.api_key_env` when configured
 
+## Optimization Update Contract
+
+Each optimization step can emit structured update payloads through the pipeline.
+For backward compatibility, legacy step behavior still works, but the normalized
+contract now requires each emitted update to include at least one of:
+
+- `savings_usd`
+- `tokens_saved`
+
+These updates are aggregated for the modular UI and surfaced via
+`/metrics/summary/v2` as per-optimization contributions.
+
 ## Local Ollama Example
 
 ```yaml
@@ -129,13 +150,19 @@ upstream:
 Then send:
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://127.0.0.1:8090/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model":"ollama/gemma3:4b",
     "messages":[{"role":"user","content":"Say hello in one sentence."}],
     "temperature":0
   }'
+```
+
+If the request fails with an upstream connection error, verify local Ollama first:
+
+```bash
+curl http://127.0.0.1:11434/api/tags
 ```
 
 ## API Reference (Request/Response)
@@ -149,7 +176,7 @@ This route is OpenAI-compatible and accepts standard chat-completions payloads.
 Example request:
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://127.0.0.1:8090/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model":"ollama/gemma3:4b",
@@ -201,6 +228,38 @@ Common error responses:
   - `{"error":{"message":"...","type":"condense_error"}}`
 - `502` upstream proxy failure (failsafe path):
   - `{"error":{"message":"...","type":"proxy_error"}}`
+
+Savings and dashboard endpoints:
+
+- `GET /metrics`:
+  - Prometheus-format metrics output for monitoring systems.
+- `GET /metrics/summary`:
+  - Structured JSON summary intended for dashboards/UI.
+  - Includes:
+    - totals (`total_savings_usd`, `total_tokens_saved_estimate`, request/cache counters, token counters)
+    - rates (`cache_hit_rate`, `avg_savings_per_request_usd`)
+    - `uptime_seconds`
+- `GET /dashboard`:
+  - Built-in lightweight HTML dashboard with live KPI cards.
+  - Auto-refreshes by polling `/metrics/summary` every 5 seconds.
+- `GET /metrics/summary/v2`:
+  - UI-focused payload for modular savings UI.
+  - Includes:
+    - `overall` consolidated savings values
+    - `enabled_tabs` from enabled optimizations
+    - `optimizations[]` per-optimization contributions/details
+- `GET /_ui`:
+  - Separate modular UI module (when built assets are present).
+  - Use `make ui-build` before loading locally.
+
+Quick check:
+
+```bash
+curl http://127.0.0.1:8090/metrics/summary
+open http://127.0.0.1:8090/dashboard
+curl http://127.0.0.1:8090/metrics/summary/v2
+open http://127.0.0.1:8090/_ui
+```
 
 ## Docker
 

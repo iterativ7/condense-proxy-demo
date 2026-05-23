@@ -13,10 +13,15 @@ class MetricsSnapshot:
     cache_misses: int = 0
     total_savings_usd: float = 0.0
     total_cost_usd: float = 0.0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    total_tokens_saved_estimate: int = 0
     requests_routed: int = 0
     requests_rejected: int = 0
     pipeline_errors: int = 0
     uptime_seconds: float = 0.0
+    optimization_totals: dict[str, dict] = field(default_factory=dict)
 
 
 class MetricsTracker:
@@ -30,19 +35,29 @@ class MetricsTracker:
         self._cache_misses = 0
         self._total_savings_usd = 0.0
         self._total_cost_usd = 0.0
+        self._total_prompt_tokens = 0
+        self._total_completion_tokens = 0
+        self._total_tokens = 0
+        self._total_tokens_saved_estimate = 0
         self._requests_routed = 0
         self._requests_rejected = 0
         self._pipeline_errors = 0
         self._latencies: list[float] = []
+        self._optimization_totals: dict[str, dict] = {}
 
     def record_request(
         self,
         cache_hit: bool = False,
         savings_usd: float = 0.0,
         cost_usd: float = 0.0,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        tokens_saved_estimate: int = 0,
         routed: bool = False,
         rejected: bool = False,
         latency_ms: float = 0.0,
+        optimization_updates: list[dict] | None = None,
     ) -> None:
         """Record metrics for a single request."""
         with self._lock:
@@ -53,6 +68,10 @@ class MetricsTracker:
                 self._cache_misses += 1
             self._total_savings_usd += savings_usd
             self._total_cost_usd += cost_usd
+            self._total_prompt_tokens += max(prompt_tokens, 0)
+            self._total_completion_tokens += max(completion_tokens, 0)
+            self._total_tokens += max(total_tokens, 0)
+            self._total_tokens_saved_estimate += max(tokens_saved_estimate, 0)
             if routed:
                 self._requests_routed += 1
             if rejected:
@@ -62,6 +81,29 @@ class MetricsTracker:
                 # Keep only last 1000 latencies
                 if len(self._latencies) > 1000:
                     self._latencies = self._latencies[-1000:]
+            if optimization_updates:
+                for update in optimization_updates:
+                    optimization_id = str(update.get("optimization_id") or "unknown")
+                    aggregate = self._optimization_totals.setdefault(
+                        optimization_id,
+                        {
+                            "optimization_id": optimization_id,
+                            "events": 0,
+                            "total_savings_usd": 0.0,
+                            "total_tokens_saved": 0,
+                            "tokens_saved": 0,
+                            "last_technique": None,
+                            "last_action": None,
+                            "last_details": {},
+                        },
+                    )
+                    aggregate["events"] += 1
+                    aggregate["total_savings_usd"] += float(update.get("savings_usd") or 0.0)
+                    aggregate["total_tokens_saved"] += int(update.get("tokens_saved") or 0)
+                    aggregate["tokens_saved"] = aggregate["total_tokens_saved"]
+                    aggregate["last_technique"] = update.get("technique")
+                    aggregate["last_action"] = update.get("action")
+                    aggregate["last_details"] = dict(update.get("details") or {})
 
     def record_error(self) -> None:
         """Record a pipeline error."""
@@ -77,10 +119,17 @@ class MetricsTracker:
                 cache_misses=self._cache_misses,
                 total_savings_usd=self._total_savings_usd,
                 total_cost_usd=self._total_cost_usd,
+                total_prompt_tokens=self._total_prompt_tokens,
+                total_completion_tokens=self._total_completion_tokens,
+                total_tokens=self._total_tokens,
+                total_tokens_saved_estimate=self._total_tokens_saved_estimate,
                 requests_routed=self._requests_routed,
                 requests_rejected=self._requests_rejected,
                 pipeline_errors=self._pipeline_errors,
                 uptime_seconds=time.time() - self._start_time,
+                optimization_totals={
+                    key: value.copy() for key, value in self._optimization_totals.items()
+                },
             )
 
     @property
@@ -90,3 +139,10 @@ class MetricsTracker:
         if total == 0:
             return 0.0
         return (self._cache_hits / total) * 100
+
+    @property
+    def avg_savings_per_request_usd(self) -> float:
+        """Return average savings per request in USD."""
+        if self._total_requests == 0:
+            return 0.0
+        return self._total_savings_usd / self._total_requests

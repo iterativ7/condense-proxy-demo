@@ -23,7 +23,20 @@ class BudgetStep(BaseStep):
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
         if not ctx.session_id:
-            return StepResult(action="next")
+            return StepResult(
+                action="next",
+                technique="budget",
+                savings_usd=0.0,
+                tokens_saved=0,
+                optimization_updates=[
+                    {
+                        "technique": "budget",
+                        "savings_usd": 0.0,
+                        "tokens_saved": 0,
+                        "details": {"status": "no_session"},
+                    }
+                ],
+            )
 
         session = await self.session_store.get_or_create(ctx.session_id)
 
@@ -39,6 +52,27 @@ class BudgetStep(BaseStep):
                 error=f"Session turn limit exceeded ({max_turns} turns)",
                 status_code=429,
                 technique="budget",
+                savings_usd=0.0,
+                tokens_saved=0,
+                details={
+                    "status": "rejected",
+                    "reason": "turn_limit",
+                    "session_turn_count": session.turn_count,
+                    "max_turns": max_turns,
+                },
+                optimization_updates=[
+                    {
+                        "technique": "budget",
+                        "savings_usd": 0.0,
+                        "tokens_saved": 0,
+                        "details": {
+                            "status": "rejected",
+                            "reason": "turn_limit",
+                            "session_turn_count": session.turn_count,
+                            "max_turns": max_turns,
+                        },
+                    }
+                ],
             )
 
         # Check cost cap
@@ -53,6 +87,27 @@ class BudgetStep(BaseStep):
                 error=f"Session cost limit exceeded (${max_cost:.2f})",
                 status_code=429,
                 technique="budget",
+                savings_usd=0.0,
+                tokens_saved=0,
+                details={
+                    "status": "rejected",
+                    "reason": "cost_limit",
+                    "session_total_cost_usd": session.total_cost_usd,
+                    "max_cost_usd": max_cost,
+                },
+                optimization_updates=[
+                    {
+                        "technique": "budget",
+                        "savings_usd": 0.0,
+                        "tokens_saved": 0,
+                        "details": {
+                            "status": "rejected",
+                            "reason": "cost_limit",
+                            "session_total_cost_usd": session.total_cost_usd,
+                            "max_cost_usd": max_cost,
+                        },
+                    }
+                ],
             )
 
         # Loop detection
@@ -70,6 +125,42 @@ class BudgetStep(BaseStep):
                     error=f"Request loop detected ({loop_window} identical requests)",
                     status_code=429,
                     technique="budget",
+                    savings_usd=0.0,
+                    tokens_saved=0,
+                    details={
+                        "status": "rejected",
+                        "reason": "loop_detected",
+                        "loop_window": loop_window,
+                    },
+                    optimization_updates=[
+                        {
+                            "technique": "budget",
+                            "savings_usd": 0.0,
+                            "tokens_saved": 0,
+                            "details": {
+                                "status": "rejected",
+                                "reason": "loop_detected",
+                                "loop_window": loop_window,
+                            },
+                        }
+                    ],
                 )
 
-        return StepResult(action="next", technique="budget")
+        return StepResult(
+            action="next",
+            technique="budget",
+            savings_usd=0.0,
+            tokens_saved=0,
+            optimization_updates=[
+                {
+                    "technique": "budget",
+                    "savings_usd": 0.0,
+                    "tokens_saved": 0,
+                    "details": {
+                        "status": "passed",
+                        "session_turn_count": session.turn_count,
+                        "session_total_cost_usd": session.total_cost_usd,
+                    },
+                }
+            ],
+        )

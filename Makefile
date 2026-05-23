@@ -1,7 +1,27 @@
-.PHONY: install test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint clean
+.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint clean
 
 install:
 	poetry install
+
+venv-setup:
+	python3 -m venv .venv
+	PIP_INDEX_URL=https://pypi.org/simple .venv/bin/python -m pip install --upgrade pip
+	PIP_INDEX_URL=https://pypi.org/simple .venv/bin/python -m pip install -e .
+
+ui-install:
+	cd ui && NPM_CONFIG_REGISTRY=https://registry.npmjs.org npm install
+
+ui-build:
+	cd ui && NPM_CONFIG_REGISTRY=https://registry.npmjs.org npm install && npm run build
+
+stop-local:
+	@PIDS=$$(lsof -ti tcp:8090); \
+	if [ -n "$$PIDS" ]; then \
+		echo "Stopping local Condense on :8090 (PID(s): $$PIDS)"; \
+		kill $$PIDS; \
+	else \
+		echo "No local Condense process listening on :8090"; \
+	fi
 
 test:
 	poetry run pytest -v
@@ -15,11 +35,14 @@ lint:
 format:
 	poetry run ruff format condense/ tests/
 
-run:
-	poetry run condense start
+start-local: venv-setup
+	.venv/bin/condense start --config condense.local.yaml
 
 init:
 	poetry run condense init
+
+run:
+	poetry run condense start
 
 docker-build:
 	docker build -t condense .

@@ -42,12 +42,40 @@ optimizations:
     enabled: false
     depends_on: ["provider_cache"]
     config:
+      # ML-based model routing — routes queries to strong or weak models
+      # based on complexity. Two backends available:
+      #   RouteLLM (pip install routellm): bert, mf, causal_llm, sw_ranking
+      #   LLMRouter (pip install llmrouter-lib): smallest_llm, largest_llm
+      # model_routing:
+      #   enabled: true
+      #   strong: "gpt-4o"
+      #   weak: "gpt-4o-mini"
+      #   threshold: 0.5
+      #   router_type: "bert"  # bert (offline ML) | mf | smallest_llm | largest_llm
+
+      # Rule-based routing (no extra dependencies required)
       rules:
         - condition: "short_messages"
           max_chars: 500
           model: "gpt-4o-mini"
         - condition: "no_tools"
           model: "gpt-4o-mini"
+
+  - id: "compression"
+    type: "compression"
+    enabled: false
+    depends_on: ["exact_cache"]
+    config:
+      # Choose backend: "fusion" (code/JSON) or "llmlingua" (natural language)
+      compressor_type: "fusion"
+      fusion:
+        aggressive: true
+        enable_rewind: false
+      # llmlingua:
+      #   model_name: "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
+      #   rate: 0.5
+      #   use_llmlingua2: true
+      #   device: "cpu"
 
   - id: "budget"
     type: "budget"

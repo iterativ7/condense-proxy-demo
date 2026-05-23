@@ -107,6 +107,27 @@ class PipelineExecutor:
                 )
 
     @staticmethod
+    def _record_step_update(ctx: PipelineContext, step: BaseStep, result: StepResult) -> None:
+        updates = list(result.optimization_updates)
+        if not updates:
+            updates = [
+                {
+                    "optimization_id": getattr(step, "optimization_id", step.name),
+                    "technique": result.technique or step.name,
+                    "savings_usd": float(result.savings_usd),
+                    "tokens_saved": int(result.tokens_saved or 0),
+                    "details": result.details or {},
+                }
+            ]
+
+        for update in updates:
+            ctx.add_optimization_update(
+                update,
+                default_optimization_id=getattr(step, "optimization_id", step.name),
+                default_action=result.action,
+            )
+
+    @staticmethod
     def _merge_parallel_ctx(
         base_ctx: PipelineContext,
         merged_ctx: PipelineContext,
@@ -154,6 +175,7 @@ class PipelineExecutor:
                     if result.technique:
                         ctx.techniques_applied.append(result.technique)
                     ctx.total_savings_usd += result.savings_usd
+                    self._record_step_update(ctx, step, result)
 
                     if result.action in {"short_circuit", "reject"}:
                         await self._run_backward(ctx, applied, result)
@@ -179,6 +201,7 @@ class PipelineExecutor:
                     if result.technique:
                         ctx.techniques_applied.append(result.technique)
                     ctx.total_savings_usd += result.savings_usd
+                    self._record_step_update(ctx, step, result)
                     if result.action in {"short_circuit", "reject"}:
                         await self._run_backward(ctx, applied, result)
                         return result
