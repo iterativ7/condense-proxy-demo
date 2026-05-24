@@ -28,7 +28,10 @@ router = ["routellm"]
 router-llmrouter = ["llmrouter-lib"]
 compression = ["claw-compactor"]
 compression-llmlingua = ["llmlingua"]
-all = ["redis", "routellm", "llmrouter-lib", "claw-compactor", "llmlingua"]
+semantic-cache = ["sentence-transformers"]
+semantic-cache-openai = ["openai"]
+semantic-cache-qdrant = ["qdrant-client"]
+all = ["redis", "routellm", "llmrouter-lib", "claw-compactor", "llmlingua", "sentence-transformers", "qdrant-client"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

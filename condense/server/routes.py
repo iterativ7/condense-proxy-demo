@@ -277,19 +277,17 @@ async def chat_completions(
             status_code=result.status_code,
         )
 
-    # Post-pipeline: store in cache (background)
-    cache_backend = getattr(app.state, "cache_backend", None)
-    if cache_backend is not None and not ctx.cache_hit and result.response and result.status_code == 200:
-        cache_key = ctx.metadata.get("cache_key")
-        if cache_key:
-            try:
-                await cache_backend.set(
-                    cache_key,
-                    result.response,
-                    ttl=cache_config.exact.ttl_seconds,
-                )
-            except Exception as e:
-                logger.error(f"Failed to store cache: {e}")
+    # Post-pipeline: store in cache via strategy-based CacheStep
+    cache_step = ctx.metadata.get("_cache_step")
+    if cache_step is not None and not ctx.cache_hit and result.response and result.status_code == 200:
+        try:
+            await cache_step.store_response(
+                ctx.original_request,
+                result.response,
+                ctx.cache_namespace,
+            )
+        except Exception as e:
+            logger.error(f"Failed to store cache: {e}")
 
     # Post-pipeline: update session state
     session_store = getattr(app.state, "session_store", None)

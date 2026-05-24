@@ -12,21 +12,35 @@ deployment:
   port: 8080
 
 optimizations:
-  - id: "exact_cache"
+  - id: "cache"
     type: "cache"
     enabled: true
     config:
-      exact:
-        enabled: true
-        backend: "memory"
-        max_size: 10000
-        ttl_seconds: 3600
-      non_deterministic: "skip"
+      strategies:
+        exact:
+          enabled: true
+          backend: "memory"        # "memory" | "redis" | any registered
+          max_size: 10000
+          ttl_seconds: 3600
+          non_deterministic: "skip"
+        # Semantic cache — similarity-based lookup (pip install sentence-transformers)
+        # semantic:
+        #   enabled: true
+        #   similarity_threshold: 0.95
+        #   max_entries: 10000
+        #   ttl_seconds: 3600
+        #   max_conversation_turns: 3
+        #   skip_tool_requests: true
+        #   embedding:
+        #     backend: "sentence_transformers"
+        #     model: "all-MiniLM-L6-v2"
+        #   vector_store:
+        #     backend: "memory"
 
   - id: "provider_cache"
     type: "provider_cache"
     enabled: true
-    depends_on: ["exact_cache"]
+    depends_on: ["cache"]
     config:
       anthropic:
         inject_cache_control: true
@@ -64,7 +78,7 @@ optimizations:
   - id: "compression"
     type: "compression"
     enabled: false
-    depends_on: ["exact_cache"]
+    depends_on: ["cache"]
     config:
       # Choose backend: "fusion" (code/JSON) or "llmlingua" (natural language)
       compressor_type: "fusion"
