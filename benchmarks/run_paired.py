@@ -260,16 +260,6 @@ def _request_fingerprint(request: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _condense_savings_usd(row: dict[str, Any]) -> float | None:
-    raw = row.get("proxy", {}).get("x_condense_headers", {}).get("x-condense-savings-usd")
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
-
-
 def _billed_proxy_tokens(row: dict[str, Any]) -> tuple[int, int]:
     """Tokens that would be billed upstream: 0 on cache hits, full usage on misses."""
     if _is_proxy_cache_hit(row):
@@ -594,12 +584,9 @@ def _build_report(
 
     proxy_input_billed = sum(_billed_proxy_tokens(row)[0] for row in rows)
     proxy_output_billed = sum(_billed_proxy_tokens(row)[1] for row in rows)
+    proxy_total_billed = proxy_input_billed + proxy_output_billed
 
     cache_hit_count = sum(1 for row in rows if _is_proxy_cache_hit(row))
-    condense_savings_usd_total = round(
-        sum(v for row in rows if (v := _condense_savings_usd(row)) is not None),
-        6,
-    )
 
     # Estimate tokens "actually generated" by the proxy:
     #   miss row -> proxy did call upstream -> count proxy completion_tokens
@@ -702,15 +689,22 @@ def _build_report(
     )
 
     # ---- Quality ----
-    baseline_quality = _pass_rate(rows, "baseline")
-    proxy_quality = _pass_rate(rows, "proxy")
-    quality_agreement = _agreement_rate(rows)
-    proxy_hits_pass = _pass_rate(
-        [row for row in rows if _is_proxy_cache_hit(row)], "proxy"
-    )
-    proxy_misses_pass = _pass_rate(
-        [row for row in rows if not _is_proxy_cache_hit(row)], "proxy"
-    )
+    if getattr(args, "skip_quality", False):
+        baseline_quality = None
+        proxy_quality = None
+        quality_agreement = None
+        proxy_hits_pass = None
+        proxy_misses_pass = None
+    else:
+        baseline_quality = _pass_rate(rows, "baseline")
+        proxy_quality = _pass_rate(rows, "proxy")
+        quality_agreement = _agreement_rate(rows)
+        proxy_hits_pass = _pass_rate(
+            [row for row in rows if _is_proxy_cache_hit(row)], "proxy"
+        )
+        proxy_misses_pass = _pass_rate(
+            [row for row in rows if not _is_proxy_cache_hit(row)], "proxy"
+        )
 
     return {
         "run": {
@@ -726,6 +720,7 @@ def _build_report(
             "preset_label": getattr(args, "preset_label", None),
             "price_input_per_1k": p_in,
             "price_output_per_1k": p_out,
+            "quality_evaluation_enabled": not bool(getattr(args, "skip_quality", False)),
         },
         "latency": {
             "baseline": baseline_lat_stats,
@@ -760,9 +755,22 @@ def _build_report(
                 "proxy_total_tokens": proxy_total_total,
                 "proxy_input_tokens_billed": proxy_input_billed,
                 "proxy_output_tokens_billed": proxy_output_billed,
+                "proxy_total_tokens_billed": proxy_total_billed,
                 "input_savings_pct": _percent_savings(baseline_input_total, proxy_input_total),
                 "output_savings_pct": _percent_savings(baseline_output_total, proxy_output_total),
-                "total_savings_pct": _percent_savings(baseline_total_total, proxy_total_total),
+                # Savings headline uses billed tokens and is floored at 0 to avoid
+                # reporting negative "savings" noise from provider-specific token
+                # accounting differences when cache has no hits.
+                "total_savings_pct": (
+                    max(0.0, billed)
+                    if (billed := _percent_savings(baseline_total_total, proxy_total_billed))
+                    is not None
+                    else None
+                ),
+                "total_savings_pct_raw": _percent_savings(baseline_total_total, proxy_total_total),
+                "total_savings_pct_billed": _percent_savings(
+                    baseline_total_total, proxy_total_billed
+                ),
                 "output_savings_pct_billed": _percent_savings(
                     baseline_output_total, proxy_output_billed + prime_output_tokens
                 ),
@@ -799,7 +807,6 @@ def _build_report(
                 "prime_total_tokens": prime_total_tokens,
                 "prime_latency_ms_total": round(prime_latency_ms_total, 3),
             },
-            "condense_reported_savings_usd_total": condense_savings_usd_total,
             # Back-compat fields
             "baseline_median_total_tokens": _median([pair[0] for pair in token_pairs]),
             "proxy_median_total_tokens": _median([pair[1] for pair in token_pairs]),
@@ -824,7 +831,6 @@ def _build_report(
             "proxy_cost_with_prime": proxy_cost_with_prime,
             "cost_savings_usd": cost_savings_usd,
             "cost_savings_pct": cost_savings_pct,
-            "condense_reported_savings_usd_total": condense_savings_usd_total,
             "configured": bool(p_in or p_out),
             "notes": (
                 "proxy_cost counts billed upstream tokens only (0 on cache hits). "
@@ -909,6 +915,16 @@ def _agreement_rate(rows: list[dict[str, Any]]) -> float | None:
     return round(matches / len(eligible), 4)
 
 
+def _unavailable_quality(scoring: str = "none") -> dict[str, Any]:
+    return {
+        "available": False,
+        "pass": None,
+        "expected": None,
+        "observed": None,
+        "scoring": scoring,
+    }
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
@@ -960,6 +976,7 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
     steady = report.get("steady_state", {})
     cache = report["cache"]
     qual = report["quality"]
+    quality_enabled = bool(run_block.get("quality_evaluation_enabled", True))
     err = report["errors"]
 
     label = run_block.get("preset_label") or Path(str(run_block.get("out_dir", ""))).name or "run"
@@ -1014,8 +1031,9 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
     lines.append(f"| Output token savings (est., generation only) | **{_fmt(tok['generation_savings'].get('completion_tokens_savings_pct_est'), '%')}** |")
     if cost.get("configured"):
         lines.append(f"| Cost saved | **${_fmt(cost.get('cost_savings_usd'))}** ({_fmt(cost.get('cost_savings_pct'), '%')}) |")
-    lines.append(f"| Quality (baseline → proxy) | **{_fmt((qual.get('baseline_quality_pass_rate') or 0) * 100, '%')} → {_fmt((qual.get('proxy_quality_pass_rate') or 0) * 100, '%')}** |")
-    lines.append(f"| Quality agreement (proxy=baseline) | **{_fmt((qual.get('agreement_rate_proxy_vs_baseline') or 0) * 100, '%')}** |")
+    if quality_enabled:
+        lines.append(f"| Quality (baseline → proxy) | **{_fmt((qual.get('baseline_quality_pass_rate') or 0) * 100, '%')} → {_fmt((qual.get('proxy_quality_pass_rate') or 0) * 100, '%')}** |")
+        lines.append(f"| Quality agreement (proxy=baseline) | **{_fmt((qual.get('agreement_rate_proxy_vs_baseline') or 0) * 100, '%')}** |")
     lines.append("")
 
     # ---- Latency ----
@@ -1052,6 +1070,7 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
     lines.append(f"| Input | {_fmt(totals.get('baseline_input_tokens'))} | {_fmt(totals.get('proxy_input_tokens'))} | {_fmt(totals.get('input_savings_pct'), '%')} |")
     lines.append(f"| Output | {_fmt(totals.get('baseline_output_tokens'))} | {_fmt(totals.get('proxy_output_tokens'))} | {_fmt(totals.get('output_savings_pct'), '%')} |")
     lines.append(f"| Total | {_fmt(totals.get('baseline_total_tokens'))} | {_fmt(totals.get('proxy_total_tokens'))} | {_fmt(totals.get('total_savings_pct'), '%')} |")
+    lines.append(f"| Total (raw, unadjusted) | {_fmt(totals.get('baseline_total_tokens'))} | {_fmt(totals.get('proxy_total_tokens'))} | {_fmt(totals.get('total_savings_pct_raw'), '%')} |")
     lines.append("")
     lines.append("**Generation savings (cache effect, estimated):**")
     lines.append("")
@@ -1096,9 +1115,6 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
         lines.append(f"| Proxy priming (unique only) | ${_fmt(cost.get('prime_cost'))} |")
         lines.append(f"| **Proxy total (billed + prime)** | **${_fmt(cost.get('proxy_cost_with_prime'))}** |")
         lines.append(f"| **Cost saved vs baseline** | **${_fmt(cost.get('cost_savings_usd'))} ({_fmt(cost.get('cost_savings_pct'), '%')})** |")
-        header_savings = cost.get("condense_reported_savings_usd_total")
-        if header_savings:
-            lines.append(f"| Condense header savings (sum) | ${_fmt(header_savings)} |")
         lines.append("")
     else:
         lines.append("## Cost")
@@ -1107,17 +1123,23 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
         lines.append("")
 
     # ---- Quality ----
-    lines.append("## Quality")
-    lines.append("")
-    lines.append("| Metric | Value |")
-    lines.append("|---|---:|")
-    lines.append(f"| Baseline pass rate | {_fmt((qual.get('baseline_quality_pass_rate') or 0) * 100, '%')} |")
-    lines.append(f"| Proxy pass rate | {_fmt((qual.get('proxy_quality_pass_rate') or 0) * 100, '%')} |")
-    lines.append(f"| Proxy − baseline | {_fmt((qual.get('quality_delta') or 0) * 100, ' pts')} |")
-    lines.append(f"| Agreement (proxy answer == baseline answer) | {_fmt((qual.get('agreement_rate_proxy_vs_baseline') or 0) * 100, '%')} |")
-    lines.append(f"| Proxy pass rate on cache hits | {_fmt(((qual.get('proxy_pass_rate_on_cache_hits') or 0)) * 100, '%')} |")
-    lines.append(f"| Proxy pass rate on cache misses | {_fmt(((qual.get('proxy_pass_rate_on_cache_misses') or 0)) * 100, '%')} |")
-    lines.append("")
+    if quality_enabled:
+        lines.append("## Quality")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("|---|---:|")
+        lines.append(f"| Baseline pass rate | {_fmt((qual.get('baseline_quality_pass_rate') or 0) * 100, '%')} |")
+        lines.append(f"| Proxy pass rate | {_fmt((qual.get('proxy_quality_pass_rate') or 0) * 100, '%')} |")
+        lines.append(f"| Proxy − baseline | {_fmt((qual.get('quality_delta') or 0) * 100, ' pts')} |")
+        lines.append(f"| Agreement (proxy answer == baseline answer) | {_fmt((qual.get('agreement_rate_proxy_vs_baseline') or 0) * 100, '%')} |")
+        lines.append(f"| Proxy pass rate on cache hits | {_fmt(((qual.get('proxy_pass_rate_on_cache_hits') or 0)) * 100, '%')} |")
+        lines.append(f"| Proxy pass rate on cache misses | {_fmt(((qual.get('proxy_pass_rate_on_cache_misses') or 0)) * 100, '%')} |")
+        lines.append("")
+    else:
+        lines.append("## Quality")
+        lines.append("")
+        lines.append("_Quality evaluation disabled for this run (`--skip-quality`)._")
+        lines.append("")
 
     # ---- Cache ----
     lines.append("## Cache")
@@ -1207,6 +1229,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             proxy = _post_json(client, args.proxy_url, proxy_request, args.authorization, **retry_kw)
 
+            if getattr(args, "skip_quality", False):
+                quality_block = {
+                    "baseline": _unavailable_quality(),
+                    "proxy": _unavailable_quality(),
+                }
+            else:
+                quality_block = {
+                    "baseline": _quality_result(case["reference"], baseline["assistant_text"]),
+                    "proxy": _quality_result(case["reference"], proxy["assistant_text"]),
+                }
+
             results.append(
                 {
                     "id": case["id"],
@@ -1218,10 +1251,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "baseline": baseline,
                     "proxy": proxy,
                     "prime": prime_record,
-                    "quality": {
-                        "baseline": _quality_result(case["reference"], baseline["assistant_text"]),
-                        "proxy": _quality_result(case["reference"], proxy["assistant_text"]),
-                    },
+                    "quality": quality_block,
                 }
             )
             print(
@@ -1334,6 +1364,11 @@ def main() -> None:
         type=float,
         default=0.0,
         help="Pause between benchmark cases to reduce rate-limit/DNS pressure.",
+    )
+    parser.add_argument(
+        "--skip-quality",
+        action="store_true",
+        help="Skip quality/reference evaluation and report savings/latency only.",
     )
     args = parser.parse_args()
     if args.prime_proxy_cache and args.prime_proxy_cache_unique:
