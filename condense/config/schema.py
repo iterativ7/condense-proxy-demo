@@ -85,6 +85,25 @@ class RoutingConfig(BaseModel):
     model_routing: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
 
 
+class FusionCompressionConfig(BaseModel):
+    aggressive: bool = True
+    enable_rewind: bool = False
+
+
+class LLMLinguaCompressionConfig(BaseModel):
+    model_name: str = "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
+    rate: float = 0.5
+    use_llmlingua2: bool = True
+    device: str = "cpu"
+
+
+class CompressionConfig(BaseModel):
+    enabled: bool = False
+    compressor_type: str = "fusion"
+    fusion: FusionCompressionConfig = Field(default_factory=FusionCompressionConfig)
+    llmlingua: LLMLinguaCompressionConfig = Field(default_factory=LLMLinguaCompressionConfig)
+
+
 class BudgetConfig(BaseModel):
     enabled: bool = True
     max_session_cost_usd: float = 10.0

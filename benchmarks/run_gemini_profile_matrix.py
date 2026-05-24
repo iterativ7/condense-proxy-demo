@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         choices=[name for name, _ in CONDENSE_MODES],
         default=[name for name, _ in CONDENSE_MODES],
     )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip cells that already have report.json in out-root.",
+    )
     return parser.parse_args()
 
 
@@ -75,6 +80,9 @@ def main() -> int:
                 raise SystemExit(f"Missing dataset: {dataset}")
 
             out_dir = args.out_root / f"{profile_name}__{mode_name}"
+            if args.skip_existing and (out_dir / "report.json").exists():
+                print(f"Skipping existing run: {out_dir}")
+                continue
             proc = start_condense(config_rel)
             try:
                 if not wait_for_health():
