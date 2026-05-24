@@ -1,4 +1,4 @@
-.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format docker-build docker-up docker-down docker-prep-integration clean
+.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint clean
 
 install:
 	poetry install
@@ -41,6 +41,9 @@ start-local: venv-setup
 init:
 	poetry run condense init
 
+run:
+	poetry run condense start
+
 docker-build:
 	docker build -t condense .
 
@@ -55,6 +58,26 @@ docker-prep-integration:
 
 docker-down:
 	docker compose down
+
+benchmark-build:
+	poetry run python benchmarks/build_production_like_profiles.py
+
+benchmark-run: benchmark-build
+	poetry run python benchmarks/run_gemini_profile_matrix.py
+
+benchmark-summary:
+	poetry run python benchmarks/summarize_profile_matrix.py
+
+benchmark: benchmark-run benchmark-summary
+
+benchmark-data:
+	poetry run python benchmarks/download_llm_benchmark_datasets.py
+	poetry run python benchmarks/convert_llm_benchmark_datasets.py --limit 50
+	poetry run python benchmarks/build_heavy_token_dataset.py
+	poetry run python benchmarks/build_production_like_profiles.py
+
+benchmark-lint:
+	poetry run ruff check benchmarks/
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

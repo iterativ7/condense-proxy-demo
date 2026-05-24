@@ -1,0 +1,41 @@
+{
+  "source": "benchmarks/datasets/converted/heavy_coding_language_40.jsonl",
+  "profiles": {
+    "support_faq_high_repeat": {
+      "path": "benchmarks/datasets/converted/profile_support_faq_high_repeat.jsonl",
+      "rows": 160,
+      "unique_requests": 32,
+      "repeat_ratio_pct": 80.0,
+      "config": {
+        "total_rows": 160,
+        "unique_ratio": 0.2,
+        "hotset_ratio": 0.2,
+        "avg_session_len": 6
+      }
+    },
+    "mixed_app_medium_repeat": {
+      "path": "benchmarks/datasets/converted/profile_mixed_app_medium_repeat.jsonl",
+      "rows": 120,
+      "unique_requests": 60,
+      "repeat_ratio_pct": 50.0,
+      "config": {
+        "total_rows": 120,
+        "unique_ratio": 0.5,
+        "hotset_ratio": 0.35,
+        "avg_session_len": 4
+      }
+    },
+    "mostly_unique_low_repeat": {
+      "path": "benchmarks/datasets/converted/profile_mostly_unique_low_repeat.jsonl",
+      "rows": 80,
+      "unique_requests": 68,
+      "repeat_ratio_pct": 15.0,
+      "config": {
+        "total_rows": 80,
+        "unique_ratio": 0.85,
+        "hotset_ratio": 0.6,
+        "avg_session_len": 3
+      }
+    }
+  }
+}
