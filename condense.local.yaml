@@ -10,21 +10,30 @@ deployment:
   port: 8090
 
 optimizations:
-  - id: "exact_cache"
+  - id: "cache"
     type: "cache"
     enabled: true
     config:
-      exact:
-        enabled: true
-        backend: "memory"
-        max_size: 10000
-        ttl_seconds: 3600
-      non_deterministic: "skip"
+      strategies:
+        exact:
+          enabled: true
+          backend: "memory"
+          max_size: 10000
+          ttl_seconds: 3600
+          non_deterministic: "skip"
+        # semantic:
+        #   enabled: true
+        #   similarity_threshold: 0.95
+        #   embedding:
+        #     backend: "sentence_transformers"
+        #     model: "all-MiniLM-L6-v2"
+        #   vector_store:
+        #     backend: "memory"
 
   - id: "provider_cache"
     type: "provider_cache"
     enabled: false
-    depends_on: ["exact_cache"]
+    depends_on: ["cache"]
     config: {}
 
   - id: "routing"
@@ -44,7 +53,7 @@ optimizations:
   - id: "compression"
     type: "compression"
     enabled: false
-    depends_on: ["exact_cache"]
+    depends_on: ["cache"]
     config:
       compressor_type: "fusion"
       fusion:
