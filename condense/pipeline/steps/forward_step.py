@@ -59,10 +59,36 @@ class ForwardStep(BaseStep):
             return raw.dict()
         return dict(raw)
 
+    def _litellm_model_name(self, model: str) -> str:
+        """Ensure model name has a provider prefix that LiteLLM understands.
+
+        When forwarding to an OpenAI-compatible upstream (like 9Router), models
+        may use custom prefixes (e.g. ``cu/claude-4.5-sonnet``). LiteLLM doesn't
+        recognise these, so we wrap them with ``openai/`` to tell LiteLLM to
+        treat the upstream as a plain OpenAI-compatible endpoint.  Known
+        provider prefixes (``openai/``, ``anthropic/``, ``deepseek/``, etc.)
+        are left untouched.
+        """
+        known_prefixes = {
+            "openai/", "anthropic/", "deepseek/", "azure/", "bedrock/",
+            "vertex_ai/", "cohere/", "replicate/", "huggingface/",
+            "together_ai/", "ollama/", "groq/", "mistral/", "gemini/",
+            "ollama_chat/", "sagemaker/",
+        }
+        model_lower = model.lower()
+        for prefix in known_prefixes:
+            if model_lower.startswith(prefix):
+                return model
+        # Unknown prefix or no prefix — wrap as openai-compatible
+        return f"openai/{model}"
+
     async def execute(self, ctx: PipelineContext) -> StepResult:
         try:
+            original_model = ctx.request.get("model", "")
+            litellm_model = self._litellm_model_name(original_model)
+
             payload = {
-                "model": ctx.request.get("model", ""),
+                "model": litellm_model,
                 "messages": ctx.request.get("messages", []),
                 "api_base": self.upstream_url,
                 "timeout": self.timeout,
@@ -74,8 +100,9 @@ class ForwardStep(BaseStep):
                 },
             }
             api_key = self._resolve_api_key(ctx)
-            if api_key:
-                payload["api_key"] = api_key
+            # LiteLLM requires an api_key even for OpenAI-compatible upstreams.
+            # Use a placeholder when none is provided (e.g. 9Router doesn't need auth).
+            payload["api_key"] = api_key or "condense-proxy"
 
             raw_response = await litellm.acompletion(**payload)
             response_data = self._to_dict_response(raw_response)

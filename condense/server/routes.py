@@ -1,6 +1,7 @@
 """FastAPI route handlers."""
 
 import copy
+import json
 import logging
 import time
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Header, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from condense.cache.key import compute_cache_key
 from condense.config.loader import load_config
@@ -16,6 +17,7 @@ from condense.config.schema import CondenseConfig
 from condense.metrics.prometheus import render_prometheus_metrics
 from condense.pipeline import build_pipeline
 from condense.pipeline.context import PipelineContext
+from condense.pipeline.executor import PipelineExecutor
 from condense.session.detector import detect_session
 from condense.utils.hashing import short_hash
 
@@ -218,6 +220,11 @@ async def chat_completions(
             status_code=400,
         )
 
+    # Track if client requested streaming — we always process non-streaming
+    # through the pipeline, then convert to SSE if needed.
+    client_wants_stream = body.pop("stream", False)
+    body["stream"] = False
+
     config: CondenseConfig = getattr(app.state, "config", load_config())
     cache_config = config.cache_config()
 
@@ -308,21 +315,93 @@ async def chat_completions(
     # Clean internal metadata before returning
     clean_response = {k: v for k, v in response_data.items() if not k.startswith("_condense_")}
 
-    response = JSONResponse(clean_response, status_code=result.status_code)
-
-    # Add X-Condense-* headers
+    condense_headers = {}
     if config.headers.add_savings_headers:
-        response.headers["X-Condense-Cache-Hit"] = str(ctx.cache_hit).lower()
-        response.headers["X-Condense-Cache-Type"] = ctx.cache_hit_type or "none"
-        response.headers["X-Condense-Original-Model"] = ctx.original_model or ""
-        response.headers["X-Condense-Routed-Model"] = ctx.routed_model or ctx.original_model or ""
-        response.headers["X-Condense-Techniques"] = ",".join(ctx.techniques_applied) if ctx.techniques_applied else "none"
-        response.headers["X-Condense-Savings-USD"] = f"{ctx.total_savings_usd:.4f}"
+        condense_headers["X-Condense-Cache-Hit"] = str(ctx.cache_hit).lower()
+        condense_headers["X-Condense-Cache-Type"] = ctx.cache_hit_type or "none"
+        condense_headers["X-Condense-Original-Model"] = ctx.original_model or ""
+        condense_headers["X-Condense-Routed-Model"] = ctx.routed_model or ctx.original_model or ""
+        condense_headers["X-Condense-Techniques"] = ",".join(ctx.techniques_applied) if ctx.techniques_applied else "none"
+        condense_headers["X-Condense-Savings-USD"] = f"{ctx.total_savings_usd:.4f}"
         if ctx.session_id:
-            response.headers["X-Condense-Session-ID"] = ctx.session_id
-            response.headers["X-Condense-Session-Turn"] = str(ctx.session_turn)
+            condense_headers["X-Condense-Session-ID"] = ctx.session_id
+            condense_headers["X-Condense-Session-Turn"] = str(ctx.session_turn)
 
+    # If client requested streaming, convert the non-streaming response to SSE
+    if client_wants_stream and result.status_code == 200:
+        return StreamingResponse(
+            _to_sse_stream(clean_response),
+            status_code=200,
+            media_type="text/event-stream",
+            headers=condense_headers,
+        )
+
+    response = JSONResponse(clean_response, status_code=result.status_code)
+    for k, v in condense_headers.items():
+        response.headers[k] = v
     return response
+
+
+async def _to_sse_stream(response: dict):
+    """Convert a non-streaming chat completion response to SSE chunks.
+
+    Emulates the OpenAI streaming format so clients like Cursor that
+    require ``stream: true`` receive a valid SSE response.
+    """
+    model = response.get("model", "")
+    resp_id = response.get("id", "chatcmpl-condense")
+    created = response.get("created", 0)
+
+    for choice in response.get("choices", []):
+        msg = choice.get("message", {})
+        chunk = {
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": choice.get("index", 0),
+                    "delta": {"role": msg.get("role", "assistant"), "content": msg.get("content", "")},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(chunk)}\n\n"
+
+        # Send finish chunk
+        finish_chunk = {
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": choice.get("index", 0),
+                    "delta": {},
+                    "finish_reason": choice.get("finish_reason", "stop"),
+                }
+            ],
+        }
+        yield f"data: {json.dumps(finish_chunk)}\n\n"
+
+    yield "data: [DONE]\n\n"
+
+
+async def _to_responses_sse_stream(response_obj: dict):
+    """Convert a Responses API result to SSE stream format."""
+    import json as _json
+    yield f"event: response.created\ndata: {_json.dumps({'type': 'response.created', 'response': response_obj})}\n\n"
+    yield f"event: response.in_progress\ndata: {_json.dumps({'type': 'response.in_progress', 'response': response_obj})}\n\n"
+
+    for item in response_obj.get("output", []):
+        if item.get("type") == "message":
+            for content in item.get("content", []):
+                if content.get("type") == "output_text":
+                    yield f"event: response.output_text.delta\ndata: {_json.dumps({'type': 'response.output_text.delta', 'delta': content.get('text', '')})}\n\n"
+                    yield f"event: response.output_text.done\ndata: {_json.dumps({'type': 'response.output_text.done', 'text': content.get('text', '')})}\n\n"
+
+    yield f"event: response.completed\ndata: {_json.dumps({'type': 'response.completed', 'response': response_obj})}\n\n"
 
 
 async def _direct_forward(body: dict, config: CondenseConfig, authorization: Optional[str]) -> dict:
@@ -341,6 +420,217 @@ async def _direct_forward(body: dict, config: CondenseConfig, authorization: Opt
                 "response": {"error": {"message": str(e), "type": "proxy_error"}},
                 "status_code": 502,
             }
+
+
+@router.post("/v1/responses")
+async def responses_api(request: Request, authorization: Optional[str] = Header(None)):
+    """OpenAI Responses API endpoint — translates to chat completions pipeline.
+
+    Accepts the Responses API format (``input`` + ``instructions``) and
+    converts it to chat completions format internally, runs through the
+    full Condense pipeline, then converts the response back.
+    """
+    try:
+        raw_body = await request.body()
+        # Handle compressed bodies (gzip, zstd, deflate)
+        content_encoding = request.headers.get("content-encoding", "").lower()
+        if content_encoding == "gzip":
+            import gzip
+            raw_body = gzip.decompress(raw_body)
+        elif content_encoding == "deflate":
+            import zlib
+            raw_body = zlib.decompress(raw_body)
+        elif content_encoding in ("zstd", "zstandard"):
+            try:
+                import zstandard
+                dctx = zstandard.ZstdDecompressor()
+                # Use streaming decompression for frames without content size
+                import io
+                reader = dctx.stream_reader(io.BytesIO(raw_body))
+                raw_body = reader.read()
+            except ImportError:
+                pass  # Try raw parse
+        body = json.loads(raw_body)
+    except Exception as e:
+        return JSONResponse(
+            {"error": {"message": f"Invalid JSON: {str(e)}", "type": "invalid_request_error"}},
+            status_code=400,
+        )
+
+    # Translate Responses API -> Chat Completions format
+    messages = []
+    instructions = body.get("instructions")
+    if instructions:
+        messages.append({"role": "system", "content": instructions})
+
+    raw_input = body.get("input", "")
+    if isinstance(raw_input, str):
+        messages.append({"role": "user", "content": raw_input})
+    elif isinstance(raw_input, list):
+        for item in raw_input:
+            if isinstance(item, dict):
+                role = item.get("role", "user")
+                content = item.get("content", "")
+                # Handle structured content (input_text blocks)
+                if isinstance(content, list):
+                    text_parts = [
+                        p.get("text", "") for p in content
+                        if isinstance(p, dict) and p.get("type") in ("input_text", "text")
+                    ]
+                    content = " ".join(text_parts)
+                messages.append({"role": role, "content": content})
+            elif isinstance(item, str):
+                messages.append({"role": "user", "content": item})
+
+    # Build a chat completions request body
+    cc_body = {
+        "model": body.get("model", ""),
+        "messages": messages,
+        "stream": False,
+    }
+    if body.get("max_output_tokens"):
+        cc_body["max_tokens"] = body["max_output_tokens"]
+    if body.get("temperature") is not None:
+        cc_body["temperature"] = body["temperature"]
+
+    # Inject the translated body and reuse the chat completions pipeline
+    # We create a mutable scope to override request.json()
+    original_json = request.json
+
+    async def patched_json():
+        return cc_body
+
+    request.json = patched_json  # type: ignore[method-assign]
+    request._json = cc_body  # type: ignore[attr-defined]
+
+    # Check streaming preference
+    client_wants_stream = body.get("stream", False)
+
+    app = request.app
+    config: CondenseConfig = getattr(app.state, "config", load_config())
+    tracker = getattr(app.state, "metrics_tracker", None)
+
+    executor = build_pipeline(
+        config,
+        getattr(app.state, "cache_backend", None),
+        getattr(app.state, "session_store", None),
+        app.state.http_client,
+    )
+
+    ctx = PipelineContext(request=cc_body, config=config, original_request=cc_body.copy())
+
+    try:
+        result = await executor.execute(ctx)
+    except Exception as e:
+        return JSONResponse(
+            {"error": {"message": str(e), "type": "pipeline_error"}},
+            status_code=502,
+        )
+
+    if result.status_code != 200:
+        return JSONResponse(
+            result.response or {"error": {"message": "Pipeline error"}},
+            status_code=result.status_code,
+        )
+
+    # Track metrics
+    if tracker and result.status_code == 200:
+        metrics = ctx.build_request_metrics()
+        tracker.record(metrics)
+
+    # Convert chat completions response -> Responses API format
+    cc_response = result.response or {}
+    resp_id = cc_response.get("id", "resp-condense")
+    model = cc_response.get("model", body.get("model", ""))
+    created = cc_response.get("created", 0)
+
+    output = []
+    for choice in cc_response.get("choices", []):
+        msg = choice.get("message", {})
+        output.append({
+            "id": f"msg_{resp_id}",
+            "type": "message",
+            "status": "completed",
+            "role": msg.get("role", "assistant"),
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": msg.get("content", ""),
+                    "annotations": [],
+                }
+            ],
+        })
+
+    raw_usage = cc_response.get("usage", {})
+    usage = {
+        "input_tokens": raw_usage.get("prompt_tokens", 0),
+        "output_tokens": raw_usage.get("completion_tokens", 0),
+        "total_tokens": raw_usage.get("total_tokens", 0),
+        "output_tokens_details": {
+            "reasoning_tokens": 0,
+        },
+    }
+    responses_result = {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created,
+        "status": "completed",
+        "error": None,
+        "incomplete_details": None,
+        "instructions": None,
+        "max_output_tokens": None,
+        "model": model,
+        "output": output,
+        "parallel_tool_calls": True,
+        "previous_response_id": None,
+        "reasoning": {"effort": None, "summary": None},
+        "store": True,
+        "temperature": 1.0,
+        "text": {"format": {"type": "text"}},
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1.0,
+        "truncation": "disabled",
+        "usage": usage,
+        "user": None,
+        "metadata": {},
+    }
+
+    condense_headers = {}
+    if config.headers.add_savings_headers:
+        condense_headers["X-Condense-Cache-Hit"] = str(ctx.cache_hit).lower()
+        condense_headers["X-Condense-Cache-Type"] = ctx.cache_hit_type or "none"
+        condense_headers["X-Condense-Techniques"] = ",".join(ctx.techniques_applied) if ctx.techniques_applied else "none"
+
+    # Codex CLI always expects SSE streaming for responses API
+    return StreamingResponse(
+        _to_responses_sse_stream(responses_result),
+        status_code=200,
+        media_type="text/event-stream",
+        headers=condense_headers,
+    )
+
+
+@router.get("/v1/models")
+async def list_models(request: Request, authorization: Optional[str] = Header(None)):
+    """Proxy /v1/models to upstream so tools can discover available models."""
+    config: CondenseConfig = getattr(request.app.state, "config", load_config())
+    headers = {}
+    if authorization:
+        headers["Authorization"] = authorization
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{config.upstream.url}/models",
+                headers=headers,
+            )
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except Exception as e:
+        logger.warning("Failed to fetch models from upstream: %s", e)
+        return JSONResponse(
+            {"object": "list", "data": []},
+            status_code=200,
+        )
 
 
 @router.get("/health")

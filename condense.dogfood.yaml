@@ -1,0 +1,59 @@
+# Condense Dogfooding Config — chains through 9Router
+# Usage: condense start --config condense.dogfood.yaml
+
+upstream:
+  url: "http://localhost:20128/v1"  # 9Router
+  timeout: 120  # coding tool requests can be long
+
+optimizations:
+  - id: "cache"
+    type: "cache"
+    enabled: true
+    depends_on: []
+    config:
+      strategies:
+        exact:
+          enabled: true
+          backend: "memory"
+        semantic:
+          enabled: true
+          embedding:
+            backend: "sentence_transformers"
+            model: "all-MiniLM-L6-v2"
+          vector_store:
+            backend: "memory"
+          similarity_threshold: 0.85
+
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    depends_on: ["cache"]
+    config:
+      backend: "fusion"
+      min_tokens: 100
+
+  - id: "provider_cache"
+    type: "provider_cache"
+    enabled: false
+    depends_on: ["compression"]
+    config:
+      provider: "auto"
+
+  - id: "routing"
+    type: "routing"
+    enabled: false
+    depends_on: ["provider_cache"]
+    config:
+      # Disable ML routing for dogfooding — let 9Router handle model selection
+      model_routing:
+        enabled: false
+      rules: []
+
+  - id: "budget"
+    type: "budget"
+    enabled: true
+    depends_on: ["routing"]
+    config:
+      max_turns: 500
+      max_cost_usd: 50.0
+
