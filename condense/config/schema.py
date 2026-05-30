@@ -19,13 +19,44 @@ class DeploymentConfig(BaseModel):
 
 class ExactCacheConfig(BaseModel):
     enabled: bool = True
-    backend: str = "memory"  # "memory" | "redis"
+    backend: str = "memory"  # "memory" | "redis" | any registered storage backend
     max_size: int = 10000
     ttl_seconds: int = 3600
+    non_deterministic: str = "skip"  # "skip" | "allow" | "normalize"
+
+
+class SemanticCacheConfig(BaseModel):
+    """Semantic cache configuration.
+
+    Embeds the last user message and finds semantically similar cached
+    queries.  Context (model, system prompt, prior messages) is hashed
+    exactly as a guard against false positives.
+
+    Embedding backends: ``sentence_transformers`` (offline), ``openai`` (API).
+    Vector store backends: ``memory`` (dev), ``qdrant`` (production).
+    """
+
+    enabled: bool = False
+    similarity_threshold: float = 0.95
+    max_entries: int = 10000
+    ttl_seconds: int = 3600
+    max_conversation_turns: int = 3  # skip for long conversations (0 = disable)
+    skip_tool_requests: bool = True
+    embedding: dict[str, Any] = Field(default_factory=lambda: {
+        "backend": "sentence_transformers",
+        "model": "all-MiniLM-L6-v2",
+    })
+    vector_store: dict[str, Any] = Field(default_factory=lambda: {
+        "backend": "memory",
+    })
 
 
 class CacheConfig(BaseModel):
     enabled: bool = True
+    strategies: dict[str, Any] = Field(default_factory=lambda: {
+        "exact": {"enabled": True, "backend": "memory", "max_size": 10000, "ttl_seconds": 3600},
+    })
+    # Legacy fields — kept for backward compatibility
     exact: ExactCacheConfig = Field(default_factory=ExactCacheConfig)
     non_deterministic: str = "skip"  # "skip" | "allow" | "normalize"
 

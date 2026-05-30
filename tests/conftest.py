@@ -43,6 +43,15 @@ def reset_config():
     reset_config_cache()
 
 
+@pytest.fixture(autouse=True)
+def reset_strategy_cache():
+    """Reset cache strategy instances between tests to prevent state leaks."""
+    from condense.pipeline.steps.cache_step import _strategy_cache
+    _strategy_cache.clear()
+    yield
+    _strategy_cache.clear()
+
+
 @pytest.fixture
 def sample_request():
     """A sample OpenAI-compatible chat request."""

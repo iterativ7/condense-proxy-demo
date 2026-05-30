@@ -179,7 +179,7 @@ deployment:
   port: 8080
 
 optimizations:
-  - id: "exact_cache"
+  - id: "cache"
     type: "cache"
     enabled: {str(c['cache_enabled']).lower()}
     config:
@@ -193,7 +193,7 @@ optimizations:
   - id: "provider_cache"
     type: "provider_cache"
     enabled: {str(c['provider_cache_enabled']).lower()}
-    depends_on: ["exact_cache"]
+    depends_on: ["cache"]
     config:
       anthropic:
         inject_cache_control: true

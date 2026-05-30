@@ -77,7 +77,7 @@ deployment:
   port: 8080
 
 optimizations:
-  - id: "exact_cache"
+  - id: "cache"
     type: "cache"
     enabled: true
     config:
