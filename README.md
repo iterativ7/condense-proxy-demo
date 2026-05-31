@@ -181,10 +181,13 @@ Supported request endpoints:
 
 - `POST /v1/chat/completions`
 - `POST /v1/messages`
+- `POST /v1/responses`
 
 `/v1/chat/completions` accepts standard OpenAI-style chat payloads.
-`/v1/messages` accepts Anthropic/Claude-style messages payloads and is internally
-adapted to the same pipeline/optimizer flow before forwarding upstream.
+`/v1/messages` accepts Anthropic/Claude-style messages payloads and forwards the
+request body/headers to upstream `/messages` without schema conversion.
+`/v1/responses` forwards request body/headers to upstream `/responses` without
+schema conversion.
 
 Example request:
 

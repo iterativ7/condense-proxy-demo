@@ -1,11 +1,10 @@
 """FastAPI route handlers."""
 
 import copy
-import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Header, Request
@@ -37,6 +36,11 @@ from condense.utils.hashing import short_hash
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+PASSTHROUGH_UPSTREAM_PATHS: dict[str, str] = {
+    "messages": "/messages",
+    "responses": "/responses",
+}
 
 
 def _is_stream_request(body: dict, config: CondenseConfig) -> bool:
@@ -292,102 +296,25 @@ def _build_dashboard_html() -> str:
 """
 
 
-def _extract_text_from_content(content: Any) -> str:
-    """Extract plain text from provider-specific content blocks."""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, dict):
-            if block.get("type") == "text" and isinstance(block.get("text"), str):
-                parts.append(block["text"])
-            elif isinstance(block.get("text"), str):
-                parts.append(block["text"])
-            elif isinstance(block.get("content"), str):
-                parts.append(block["content"])
-    return "".join(parts)
-
-
-def _anthropic_to_openai_request(body: dict[str, Any]) -> dict[str, Any]:
-    """Convert Anthropic-style messages request to OpenAI chat payload."""
-    openai_messages: list[dict[str, Any]] = []
-
-    system = body.get("system")
-    if system is not None:
-        system_text = _extract_text_from_content(system)
-        if system_text:
-            openai_messages.append({"role": "system", "content": system_text})
-
-    for msg in body.get("messages", []) or []:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role") or "user"
-        openai_messages.append(
-            {
-                "role": role,
-                "content": _extract_text_from_content(msg.get("content")),
-            }
-        )
-
-    payload: dict[str, Any] = {
-        "model": body.get("model"),
-        "messages": openai_messages,
-        "stream": bool(body.get("stream", False)),
+def _build_passthrough_headers(
+    request: Request,
+    *,
+    authorization: Optional[str] = None,
+    x_api_key: Optional[str] = None,
+) -> dict[str, str]:
+    """Forward inbound provider headers while dropping hop-by-hop values."""
+    dropped = {"host", "content-length", "connection", "transfer-encoding"}
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in dropped
     }
-    passthrough_keys = (
-        "max_tokens",
-        "temperature",
-        "top_p",
-        "top_k",
-        "metadata",
-        "tools",
-        "tool_choice",
-    )
-    for key in passthrough_keys:
-        if key in body:
-            payload[key] = body[key]
-    if "stop_sequences" in body:
-        payload["stop"] = body["stop_sequences"]
-    return payload
-
-
-def _map_finish_reason_to_anthropic(reason: str | None) -> str:
-    if reason == "length":
-        return "max_tokens"
-    if reason == "tool_calls":
-        return "tool_use"
-    return "end_turn"
-
-
-def _openai_to_anthropic_response(response: dict[str, Any]) -> dict[str, Any]:
-    """Convert OpenAI chat response to Anthropic messages response."""
-    choices = response.get("choices") or []
-    first_choice = choices[0] if choices else {}
-    message = first_choice.get("message") or {}
-    text = _extract_text_from_content(message.get("content"))
-    usage = response.get("usage") or {}
-    finish_reason = first_choice.get("finish_reason")
-    return {
-        "id": response.get("id") or "msg-condense",
-        "type": "message",
-        "role": "assistant",
-        "model": response.get("model"),
-        "content": [{"type": "text", "text": text}],
-        "stop_reason": _map_finish_reason_to_anthropic(finish_reason),
-        "stop_sequence": None,
-        "usage": {
-            "input_tokens": int(usage.get("prompt_tokens") or 0),
-            "output_tokens": int(usage.get("completion_tokens") or 0),
-        },
-    }
-
-
-def _copy_condense_headers(source: JSONResponse, target: JSONResponse) -> None:
-    for key, value in source.headers.items():
-        if key.lower().startswith("x-condense-"):
-            target.headers[key] = value
+    headers["Content-Type"] = "application/json"
+    if authorization:
+        headers["Authorization"] = authorization
+    elif x_api_key:
+        headers["x-api-key"] = x_api_key
+    return headers
 
 
 async def _handle_openai_chat_completions(
@@ -579,6 +506,37 @@ async def anthropic_messages(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ):
     """Anthropic-style messages endpoint."""
+    return await _handle_passthrough_endpoint(
+        request,
+        upstream_path=PASSTHROUGH_UPSTREAM_PATHS["messages"],
+        authorization=authorization,
+        x_api_key=x_api_key,
+    )
+
+
+@router.post("/v1/responses")
+async def responses_passthrough(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    """Provider-native responses endpoint pass-through."""
+    return await _handle_passthrough_endpoint(
+        request,
+        upstream_path=PASSTHROUGH_UPSTREAM_PATHS["responses"],
+        authorization=authorization,
+        x_api_key=x_api_key,
+    )
+
+
+async def _handle_passthrough_endpoint(
+    request: Request,
+    *,
+    upstream_path: str,
+    authorization: Optional[str] = None,
+    x_api_key: Optional[str] = None,
+):
+    """Forward request body/headers to an upstream provider path."""
     try:
         body = await request.json()
     except Exception as e:
@@ -587,44 +545,55 @@ async def anthropic_messages(
             status_code=400,
         )
 
-    openai_payload = _anthropic_to_openai_request(body)
-    auth = authorization or (f"Bearer {x_api_key}" if x_api_key else None)
-    response = await _handle_openai_chat_completions(request, openai_payload, auth)
+    config: CondenseConfig = getattr(request.app.state, "config", load_config())
+    passthrough_headers = _build_passthrough_headers(
+        request,
+        authorization=authorization,
+        x_api_key=x_api_key,
+    )
 
-    if isinstance(response, StreamingResponse):
-        return JSONResponse(
-            {
-                "type": "error",
-                "error": {
-                    "type": "invalid_request_error",
-                    "message": "Anthropic stream format is not yet supported on this endpoint.",
-                },
-            },
-            status_code=400,
+    if _is_stream_request(body, config):
+        return await _direct_forward_stream(
+            body,
+            config,
+            authorization,
+            upstream_path=upstream_path,
+            extra_headers=passthrough_headers,
         )
-    if not isinstance(response, JSONResponse):
-        return response
-    if response.status_code >= 400:
-        return response
-
-    upstream_payload = json.loads(response.body.decode("utf-8"))
-    anthropic_payload = _openai_to_anthropic_response(upstream_payload)
-    adapted = JSONResponse(anthropic_payload, status_code=response.status_code)
-    _copy_condense_headers(response, adapted)
-    return adapted
+    result = await _direct_forward(
+        body,
+        config,
+        authorization,
+        upstream_path=upstream_path,
+        extra_headers=passthrough_headers,
+    )
+    return JSONResponse(result["response"], status_code=result["status_code"])
 
 
-async def _direct_forward(body: dict, config: CondenseConfig, authorization: Optional[str]) -> dict:
+async def _direct_forward(
+    body: dict,
+    config: CondenseConfig,
+    authorization: Optional[str],
+    *,
+    upstream_path: str = "/chat/completions",
+    extra_headers: Optional[dict[str, str]] = None,
+) -> dict:
     """Direct forward to upstream (circuit breaker bypass)."""
-    url = f"{config.upstream.url.rstrip('/')}/chat/completions"
+    url = f"{config.upstream.url.rstrip('/')}{upstream_path}"
     headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if authorization:
         headers["Authorization"] = authorization
 
     async with httpx.AsyncClient(timeout=config.upstream.timeout_seconds) as client:
         try:
             resp = await client.post(url, json=body, headers=headers)
-            return {"response": resp.json(), "status_code": resp.status_code}
+            try:
+                response_data = resp.json()
+            except ValueError:
+                response_data = {"raw_response": resp.text}
+            return {"response": response_data, "status_code": resp.status_code}
         except Exception as e:
             return {
                 "response": {"error": {"message": str(e), "type": "proxy_error"}},
@@ -636,10 +605,15 @@ async def _direct_forward_stream(
     body: dict,
     config: CondenseConfig,
     authorization: Optional[str],
+    *,
+    upstream_path: str = "/chat/completions",
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> StreamingResponse:
     """Direct streaming forward to upstream (circuit breaker bypass)."""
-    url = f"{config.upstream.url.rstrip('/')}/chat/completions"
+    url = f"{config.upstream.url.rstrip('/')}{upstream_path}"
     headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if authorization:
         headers["Authorization"] = authorization
 
