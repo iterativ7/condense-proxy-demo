@@ -102,6 +102,121 @@ class TestChatCompletionsRoute:
         data = resp.json()
         assert data["id"] == "chatcmpl-123"
 
+    def test_anthropic_messages_endpoint(self, client, monkeypatch):
+        """Anthropic /v1/messages payload is forwarded as-is upstream."""
+        request_payload = {
+            "model": "claude-3-5-sonnet",
+            "max_tokens": 256,
+            "system": "You are concise.",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+        }
+        response_data = {
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello from upstream"}],
+            "model": "claude-3-5-sonnet-20241022",
+            "usage": {"input_tokens": 11, "output_tokens": 7},
+        }
+        captured = {}
+
+        async def fake_direct_forward(body, config, authorization, *, upstream_path="/chat/completions", extra_headers=None):
+            captured["body"] = body
+            captured["path"] = upstream_path
+            captured["headers"] = extra_headers or {}
+            return {"response": response_data, "status_code": 200}
+
+        monkeypatch.setattr("condense.server.routes._direct_forward", fake_direct_forward)
+
+        resp = client.post(
+            "/v1/messages",
+            json=request_payload,
+            headers={"x-api-key": "anthropic-test-key", "anthropic-version": "2023-06-01"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == response_data
+        assert captured["body"] == request_payload
+        assert captured["path"] == "/messages"
+        assert captured["headers"]["x-api-key"] == "anthropic-test-key"
+        assert captured["headers"]["anthropic-version"] == "2023-06-01"
+
+    def test_anthropic_stream_passthrough(self, client, monkeypatch):
+        """Anthropic stream requests pass through without format conversion."""
+        captured = {}
+
+        async def fake_direct_forward_stream(
+            body,
+            config,
+            authorization,
+            *,
+            upstream_path="/chat/completions",
+            extra_headers=None,
+        ):
+            captured["body"] = body
+            captured["path"] = upstream_path
+            captured["headers"] = extra_headers or {}
+
+            async def _gen():
+                yield b"event: message_start\n"
+                yield b'data: {"type":"message_start"}\n\n'
+                yield b"event: message_stop\n"
+                yield b'data: {"type":"message_stop"}\n\n'
+
+            return StreamingResponse(_gen(), media_type="text/event-stream")
+
+        monkeypatch.setattr("condense.server.routes._direct_forward_stream", fake_direct_forward_stream)
+
+        with client.stream(
+            "POST",
+            "/v1/messages",
+            json={
+                "model": "claude-3-5-sonnet",
+                "max_tokens": 64,
+                "stream": True,
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+            headers={"x-api-key": "anthropic-test-key", "anthropic-version": "2023-06-01"},
+        ) as resp:
+            assert resp.status_code == 200
+            assert "text/event-stream" in resp.headers.get("content-type", "")
+            body = "".join(part for part in resp.iter_text())
+
+        assert "message_start" in body
+        assert captured["path"] == "/messages"
+        assert captured["headers"]["x-api-key"] == "anthropic-test-key"
+
+    def test_responses_endpoint_passthrough(self, client, monkeypatch):
+        """Responses endpoint forwards payload to upstream /responses path."""
+        request_payload = {
+            "model": "gpt-4o",
+            "input": [{"role": "user", "content": "Hello"}],
+        }
+        response_data = {
+            "id": "resp_123",
+            "object": "response",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hello back"}]}],
+        }
+        captured = {}
+
+        async def fake_direct_forward(body, config, authorization, *, upstream_path="/chat/completions", extra_headers=None):
+            captured["body"] = body
+            captured["path"] = upstream_path
+            captured["headers"] = extra_headers or {}
+            return {"response": response_data, "status_code": 200}
+
+        monkeypatch.setattr("condense.server.routes._direct_forward", fake_direct_forward)
+
+        resp = client.post(
+            "/v1/responses",
+            json=request_payload,
+            headers={"authorization": "Bearer responses-key"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == response_data
+        assert captured["body"] == request_payload
+        assert captured["path"] == "/responses"
+        assert captured["headers"]["authorization"] == "Bearer responses-key"
+
     def test_streaming_response_passthrough(self, client, monkeypatch):
         """stream=true returns SSE chunks with [DONE] trailer."""
         stream_chunks = [

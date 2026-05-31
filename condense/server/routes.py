@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+PASSTHROUGH_UPSTREAM_PATHS: dict[str, str] = {
+    "messages": "/messages",
+    "responses": "/responses",
+}
+
 
 def _is_stream_request(body: dict, config: CondenseConfig) -> bool:
     return bool(body.get("stream")) and bool(config.deployment.streaming_enabled)
@@ -291,22 +296,34 @@ def _build_dashboard_html() -> str:
 """
 
 
-@router.post("/v1/chat/completions")
-async def chat_completions(
+def _build_passthrough_headers(
     request: Request,
+    *,
+    authorization: Optional[str] = None,
+    x_api_key: Optional[str] = None,
+) -> dict[str, str]:
+    """Forward inbound provider headers while dropping hop-by-hop values."""
+    dropped = {"host", "content-length", "connection", "transfer-encoding"}
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in dropped
+    }
+    headers["Content-Type"] = "application/json"
+    if authorization:
+        headers["Authorization"] = authorization
+    elif x_api_key:
+        headers["x-api-key"] = x_api_key
+    return headers
+
+
+async def _handle_openai_chat_completions(
+    request: Request,
+    body: dict[str, Any],
     authorization: Optional[str] = Header(None),
 ):
-    """Main proxy endpoint — OpenAI-compatible chat completions."""
+    """Shared OpenAI-compatible chat completions flow."""
     app = request.app
-
-    # Parse request body
-    try:
-        body = await request.json()
-    except Exception as e:
-        return JSONResponse(
-            {"error": {"message": f"Invalid JSON: {str(e)}", "type": "invalid_request_error"}},
-            status_code=400,
-        )
 
     config: CondenseConfig = getattr(app.state, "config", load_config())
     # Compute cache namespace (tenant isolation)
@@ -466,17 +483,117 @@ async def chat_completions(
     return response
 
 
-async def _direct_forward(body: dict, config: CondenseConfig, authorization: Optional[str]) -> dict:
+@router.post("/v1/chat/completions")
+async def chat_completions(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+):
+    """Main proxy endpoint — OpenAI-compatible chat completions."""
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse(
+            {"error": {"message": f"Invalid JSON: {str(e)}", "type": "invalid_request_error"}},
+            status_code=400,
+        )
+    return await _handle_openai_chat_completions(request, body, authorization)
+
+
+@router.post("/v1/messages")
+async def anthropic_messages(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    """Anthropic-style messages endpoint."""
+    return await _handle_passthrough_endpoint(
+        request,
+        upstream_path=PASSTHROUGH_UPSTREAM_PATHS["messages"],
+        authorization=authorization,
+        x_api_key=x_api_key,
+    )
+
+
+@router.post("/v1/responses")
+async def responses_passthrough(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+):
+    """Provider-native responses endpoint pass-through."""
+    return await _handle_passthrough_endpoint(
+        request,
+        upstream_path=PASSTHROUGH_UPSTREAM_PATHS["responses"],
+        authorization=authorization,
+        x_api_key=x_api_key,
+    )
+
+
+async def _handle_passthrough_endpoint(
+    request: Request,
+    *,
+    upstream_path: str,
+    authorization: Optional[str] = None,
+    x_api_key: Optional[str] = None,
+):
+    """Forward request body/headers to an upstream provider path."""
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse(
+            {"error": {"message": f"Invalid JSON: {str(e)}", "type": "invalid_request_error"}},
+            status_code=400,
+        )
+
+    config: CondenseConfig = getattr(request.app.state, "config", load_config())
+    passthrough_headers = _build_passthrough_headers(
+        request,
+        authorization=authorization,
+        x_api_key=x_api_key,
+    )
+
+    if _is_stream_request(body, config):
+        return await _direct_forward_stream(
+            body,
+            config,
+            authorization,
+            upstream_path=upstream_path,
+            extra_headers=passthrough_headers,
+        )
+    result = await _direct_forward(
+        body,
+        config,
+        authorization,
+        upstream_path=upstream_path,
+        extra_headers=passthrough_headers,
+    )
+    return JSONResponse(result["response"], status_code=result["status_code"])
+
+
+async def _direct_forward(
+    body: dict,
+    config: CondenseConfig,
+    authorization: Optional[str],
+    *,
+    upstream_path: str = "/chat/completions",
+    extra_headers: Optional[dict[str, str]] = None,
+) -> dict:
     """Direct forward to upstream (circuit breaker bypass)."""
-    url = f"{config.upstream.url.rstrip('/')}/chat/completions"
+    url = f"{config.upstream.url.rstrip('/')}{upstream_path}"
     headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if authorization:
         headers["Authorization"] = authorization
 
     async with httpx.AsyncClient(timeout=config.upstream.timeout_seconds) as client:
         try:
             resp = await client.post(url, json=body, headers=headers)
-            return {"response": resp.json(), "status_code": resp.status_code}
+            try:
+                response_data = resp.json()
+            except ValueError:
+                response_data = {"raw_response": resp.text}
+            return {"response": response_data, "status_code": resp.status_code}
         except Exception as e:
             return {
                 "response": {"error": {"message": str(e), "type": "proxy_error"}},
@@ -488,10 +605,15 @@ async def _direct_forward_stream(
     body: dict,
     config: CondenseConfig,
     authorization: Optional[str],
+    *,
+    upstream_path: str = "/chat/completions",
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> StreamingResponse:
     """Direct streaming forward to upstream (circuit breaker bypass)."""
-    url = f"{config.upstream.url.rstrip('/')}/chat/completions"
+    url = f"{config.upstream.url.rstrip('/')}{upstream_path}"
     headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if authorization:
         headers["Authorization"] = authorization
 
