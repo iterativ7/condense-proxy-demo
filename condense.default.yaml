@@ -80,7 +80,8 @@ optimizations:
     enabled: false
     depends_on: ["cache"]
     config:
-      # Choose backend: "fusion" (code/JSON) or "llmlingua" (natural language)
+      # === Option A: Single backend ===
+      # Choose one: "fusion" (code/JSON), "llmlingua" (natural language), or "rtk" (tool output)
       compressor_type: "fusion"
       fusion:
         aggressive: true
@@ -90,6 +91,16 @@ optimizations:
       #   rate: 0.5
       #   use_llmlingua2: true
       #   device: "cpu"
+
+      # === Option B: Compression chain (recommended) ===
+      # Multiple backends running back-to-back, each targeting specific message roles.
+      # RTK compresses tool output (git diffs, test results, grep, etc.) — pip install condense[rtk]
+      # Fusion compresses natural language (user/system prompts)
+      # chain:
+      #   - backend: "rtk"
+      #     apply_to: ["tool"]
+      #   - backend: "fusion"
+      #     apply_to: ["user", "system"]
 
   - id: "budget"
     type: "budget"

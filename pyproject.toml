@@ -21,6 +21,7 @@ litellm = "*"
 tiktoken = {version = "^0.8.0", optional = true}
 watchfiles = "^1.0.0"
 redis = {version = "^5.0", optional = true}
+rtk-py = {version = ">=0.38.0", optional = true}
 
 [tool.poetry.extras]
 redis = ["redis"]
@@ -28,10 +29,11 @@ router = ["routellm"]
 router-llmrouter = ["llmrouter-lib"]
 compression = ["claw-compactor"]
 compression-llmlingua = ["llmlingua"]
+rtk = ["rtk-py"]
 semantic-cache = ["sentence-transformers"]
 semantic-cache-openai = ["openai"]
 semantic-cache-qdrant = ["qdrant-client"]
-all = ["redis", "routellm", "llmrouter-lib", "claw-compactor", "llmlingua", "sentence-transformers", "qdrant-client"]
+all = ["redis", "routellm", "llmrouter-lib", "claw-compactor", "llmlingua", "rtk-py", "sentence-transformers", "qdrant-client"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

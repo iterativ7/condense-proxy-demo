@@ -55,10 +55,17 @@ optimizations:
     enabled: false
     depends_on: ["cache"]
     config:
+      # Single backend (default):
       compressor_type: "fusion"
       fusion:
         aggressive: true
         enable_rewind: false
+      # Chain mode (recommended for agent workloads):
+      # chain:
+      #   - backend: "rtk"          # pip install condense[rtk]
+      #     apply_to: ["tool"]
+      #   - backend: "fusion"       # pip install condense[compression]
+      #     apply_to: ["user", "system"]
 
   - id: "budget"
     type: "budget"

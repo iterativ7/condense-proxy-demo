@@ -433,6 +433,343 @@ deployment:
             assert calls[0]["model"] == "gpt-4o-mini"
 
 
+def test_e2e_rtk_single_backend_compresses_tool_messages(tmp_path, monkeypatch):
+    """RTK as single compression backend compresses tool messages e2e."""
+    import subprocess
+    from unittest.mock import patch
+
+    client = _make_client(
+        tmp_path,
+        """
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    config:
+      compressor_type: "rtk"
+  - id: "cache"
+    type: "cache"
+    enabled: false
+    config: {}
+  - id: "budget"
+    type: "budget"
+    enabled: false
+    config: {}
+deployment:
+  port: 8080
+""",
+    )
+
+    calls: list[dict] = []
+    response_data = {
+        "id": "chatcmpl-rtk-1",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Analyzed the test results"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20},
+    }
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return response_data
+
+    monkeypatch.setattr(
+        "condense.pipeline.steps.forward_step.litellm.acompletion",
+        fake_acompletion,
+    )
+
+    # Mock RTK binary as available and compressing
+    tool_output = (
+        "running 3 tests\n"
+        "test tests::test_add ... ok\n"
+        "test tests::test_sub ... ok\n"
+        "test tests::test_mul ... FAILED\n"
+        "\n"
+        "failures:\n" + "x" * 200 + "\n"
+        "test result: FAILED. 2 passed; 1 failed; 0 ignored\n"
+    )
+
+    def mock_subprocess_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0] if args else ["rtk", "pipe"],
+            returncode=0,
+            stdout="test result: FAILED. 2 passed; 1 failed",
+            stderr="",
+        )
+
+    with patch(
+        "condense.compression.backends.rtk_backend._rtk_binary_path",
+        return_value="/usr/bin/rtk",
+    ):
+        with patch(
+            "condense.compression.backends.rtk_backend.subprocess.run",
+            side_effect=mock_subprocess_run,
+        ):
+            with client:
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-4o",
+                        "messages": [
+                            {"role": "user", "content": "Run the tests"},
+                            {"role": "tool", "content": tool_output},
+                            {"role": "user", "content": "What failed?"},
+                        ],
+                        "temperature": 0,
+                    },
+                )
+                assert resp.status_code == 200
+                assert resp.json()["choices"][0]["message"]["content"] == "Analyzed the test results"
+                # Verify compression was applied
+                assert "compression" in resp.headers.get("x-condense-techniques", "")
+                # Verify the tool message was compressed
+                assert len(calls) == 1
+                forwarded_msgs = calls[0]["messages"]
+                assert forwarded_msgs[0]["content"] == "Run the tests"  # user unchanged
+                assert forwarded_msgs[1]["content"] == "test result: FAILED. 2 passed; 1 failed"  # tool compressed
+                assert forwarded_msgs[2]["content"] == "What failed?"  # user unchanged
+
+
+def test_e2e_chain_rtk_plus_fusion(tmp_path, monkeypatch):
+    """Chain with RTK (tool msgs) + fusion (user msgs) should both compress."""
+    import subprocess
+    from unittest.mock import patch, MagicMock
+    from condense.compression.base import CompressResult
+
+    client = _make_client(
+        tmp_path,
+        """
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    config:
+      chain:
+        - backend: "rtk"
+          apply_to: ["tool"]
+        - backend: "fusion"
+          apply_to: ["user"]
+  - id: "cache"
+    type: "cache"
+    enabled: false
+    config: {}
+  - id: "budget"
+    type: "budget"
+    enabled: false
+    config: {}
+deployment:
+  port: 8080
+""",
+    )
+
+    calls: list[dict] = []
+    response_data = {
+        "id": "chatcmpl-chain-1",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Chain compressed response"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return response_data
+
+    monkeypatch.setattr(
+        "condense.pipeline.steps.forward_step.litellm.acompletion",
+        fake_acompletion,
+    )
+
+    tool_output = "running 3 tests\n" + "detailed output " * 20 + "\ntest result: ok. 3 passed"
+
+    def mock_subprocess_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0] if args else ["rtk", "pipe"],
+            returncode=0,
+            stdout="test result: ok. 3 passed",
+            stderr="",
+        )
+
+    # Mock RTK binary + fusion backend for chain test
+    # Fusion is real but may not compress short text, so we mock it
+    mock_fusion = MagicMock()
+    mock_fusion.available = True
+    mock_fusion.compress_messages.side_effect = lambda msgs: CompressResult(
+        messages=[{**m, "content": "[FUSION]" + m.get("content", "")[:30]} for m in msgs],
+        original_tokens=sum(len(m.get("content", "")) for m in msgs),
+        compressed_tokens=sum(len("[FUSION]" + m.get("content", "")[:30]) for m in msgs),
+        reduction_pct=40.0,
+    )
+
+    from condense.compression.base import compression_registry
+
+    original_get = compression_registry.get
+
+    def patched_get(name):
+        if name == "fusion":
+            return lambda **kw: mock_fusion
+        return original_get(name)
+
+    with patch(
+        "condense.compression.backends.rtk_backend._rtk_binary_path",
+        return_value="/usr/bin/rtk",
+    ):
+        with patch(
+            "condense.compression.backends.rtk_backend.subprocess.run",
+            side_effect=mock_subprocess_run,
+        ):
+            with patch.object(compression_registry, "get", side_effect=patched_get):
+                with client:
+                    resp = client.post(
+                        "/v1/chat/completions",
+                        json={
+                            "model": "gpt-4o",
+                            "messages": [
+                                {"role": "system", "content": "You are a test assistant."},
+                                {"role": "user", "content": "Please run the test suite for me now"},
+                                {"role": "tool", "content": tool_output},
+                                {"role": "user", "content": "Did they pass?"},
+                            ],
+                            "temperature": 0,
+                        },
+                    )
+                    assert resp.status_code == 200
+                    assert resp.json()["choices"][0]["message"]["content"] == "Chain compressed response"
+                    assert "compression" in resp.headers.get("x-condense-techniques", "")
+
+                    # Verify chain applied: tool compressed by RTK, user by fusion
+                    assert len(calls) == 1
+                    forwarded_msgs = calls[0]["messages"]
+                    # System unchanged (no backend targets it)
+                    assert forwarded_msgs[0]["content"] == "You are a test assistant."
+                    # User messages compressed by fusion
+                    assert forwarded_msgs[1]["content"].startswith("[FUSION]")
+                    # Tool message compressed by RTK
+                    assert forwarded_msgs[2]["content"] == "test result: ok. 3 passed"
+                    # Second user also compressed by fusion
+                    assert forwarded_msgs[3]["content"].startswith("[FUSION]")
+
+
+def test_e2e_chain_rtk_unavailable_fusion_still_works(tmp_path, monkeypatch):
+    """When RTK is unavailable in a chain, other backends still work."""
+    from unittest.mock import patch, MagicMock
+    from condense.compression.base import CompressResult, compression_registry
+    from condense.pipeline.steps.compression_step import _compressor_cache
+
+    _compressor_cache.clear()
+
+    calls: list[dict] = []
+    response_data = {
+        "id": "chatcmpl-degrade-1",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Degraded ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+    }
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return response_data
+
+    monkeypatch.setattr(
+        "condense.pipeline.steps.forward_step.litellm.acompletion",
+        fake_acompletion,
+    )
+
+    mock_fusion = MagicMock()
+    mock_fusion.available = True
+    mock_fusion.compress_messages.side_effect = lambda msgs: CompressResult(
+        messages=[{**m, "content": "[FUSED]"} for m in msgs],
+        original_tokens=100,
+        compressed_tokens=10,
+        reduction_pct=90.0,
+    )
+
+    original_get = compression_registry.get
+
+    def patched_get(name):
+        if name == "fusion":
+            return lambda **kw: mock_fusion
+        return original_get(name)
+
+    # Patch BEFORE creating the client so the chain is built with mocked backends
+    with patch(
+        "condense.compression.backends.rtk_backend._rtk_binary_path",
+        return_value=None,
+    ):
+        with patch.object(compression_registry, "get", side_effect=patched_get):
+            client = _make_client(
+                tmp_path,
+                """
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    config:
+      chain:
+        - backend: "rtk"
+          apply_to: ["tool"]
+        - backend: "fusion"
+          apply_to: ["user"]
+  - id: "cache"
+    type: "cache"
+    enabled: false
+    config: {}
+  - id: "budget"
+    type: "budget"
+    enabled: false
+    config: {}
+deployment:
+  port: 8080
+""",
+            )
+            with client:
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-4o",
+                        "messages": [
+                            {"role": "user", "content": "Run the tests please"},
+                            {"role": "tool", "content": "test result: ok. 3 passed"},
+                        ],
+                        "temperature": 0,
+                    },
+                )
+                assert resp.status_code == 200
+                assert len(calls) == 1
+                forwarded_msgs = calls[0]["messages"]
+                # User message WAS compressed by fusion
+                assert forwarded_msgs[0]["content"] == "[FUSED]"
+                # Tool message was NOT compressed (RTK unavailable) — passed through
+                assert forwarded_msgs[1]["content"] == "test result: ok. 3 passed"
+
+    _compressor_cache.clear()
+
+
 def test_e2e_budget_rejects_after_turn_limit(tmp_path, monkeypatch):
     """Budget optimization should reject requests after session turn cap."""
     client = _make_client(

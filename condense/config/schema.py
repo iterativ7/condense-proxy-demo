@@ -116,6 +116,28 @@ class RoutingConfig(BaseModel):
     model_routing: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
 
 
+class CompressionChainEntry(BaseModel):
+    """One link in a compression chain."""
+    backend: str  # "rtk" | "fusion" | "llmlingua" | any registered backend
+    apply_to: list[str] = Field(default_factory=list)  # e.g. ["tool"], ["user", "system"]
+
+
+class CompressionConfig(BaseModel):
+    """Compression optimization config.
+
+    Supports two modes:
+    - Single backend: ``compressor_type: "fusion"``
+    - Chain (P0-13): ``chain: [{backend: "rtk", apply_to: ["tool"]}, ...]``
+    """
+    enabled: bool = True
+    compressor_type: str = "fusion"  # used in single-backend mode
+    chain: list[CompressionChainEntry] = Field(default_factory=list)
+    # Backend-specific sub-configs (used in single-backend mode)
+    fusion: dict[str, Any] = Field(default_factory=dict)
+    llmlingua: dict[str, Any] = Field(default_factory=dict)
+    rtk: dict[str, Any] = Field(default_factory=dict)
+
+
 class BudgetConfig(BaseModel):
     enabled: bool = True
     max_session_cost_usd: float = 10.0
