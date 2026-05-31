@@ -21,7 +21,7 @@ from condense.cache.key import compute_cache_key
 from condense.config.loader import load_config
 from condense.config.schema import CondenseConfig
 from condense.metrics.prometheus import render_prometheus_metrics
-from condense.metrics.sqlite_store import WINDOW_TO_SECONDS
+from condense.metrics.postgres_store import WINDOW_TO_SECONDS
 from condense.pipeline import build_pipeline
 from condense.pipeline.context import PipelineContext
 from condense.pipeline.executor import PipelineExecutor
@@ -101,21 +101,19 @@ def _record_metrics(
     ttfb_ms: float = 0.0,
     stream_duration_ms: float = 0.0,
 ) -> None:
-    metrics = getattr(app.state, "metrics", None)
     metrics_store = getattr(app.state, "metrics_store", None)
+    if metrics_store is None:
+        return
     request_metrics = ctx.build_request_metrics(
         result,
         latency_ms,
         ttfb_ms=ttfb_ms,
         stream_duration_ms=stream_duration_ms,
     )
-    if metrics:
-        metrics.record_request(**request_metrics.as_record_kwargs())
-    if metrics_store:
-        try:
-            metrics_store.record_request(request_metrics.as_record_kwargs())
-        except Exception as exc:
-            logger.error("Failed to persist request metrics: %s", exc)
+    try:
+        metrics_store.record_request(request_metrics.as_record_kwargs())
+    except Exception as exc:
+        logger.error("Failed to persist request metrics: %s", exc)
 
 
 def _enabled_optimization_ids(config: CondenseConfig) -> list[str]:
@@ -548,11 +546,12 @@ async def health_ready(request: Request):
 @router.get("/metrics")
 async def metrics(request: Request):
     """Prometheus-compatible metrics endpoint."""
-    tracker = getattr(request.app.state, "metrics", None)
-    if tracker is None:
+    metrics_store = getattr(request.app.state, "metrics_store", None)
+    if metrics_store is None:
         return PlainTextResponse("# No metrics available\n")
+    summary = metrics_store.summary()
     return PlainTextResponse(
-        render_prometheus_metrics(tracker),
+        render_prometheus_metrics(summary),
         media_type="text/plain; version=0.0.4",
     )
 
@@ -561,11 +560,7 @@ async def metrics(request: Request):
 async def metrics_summary(request: Request):
     """Structured metrics summary endpoint for dashboards and UIs."""
     metrics_store = getattr(request.app.state, "metrics_store", None)
-    if metrics_store is not None:
-        return metrics_store.summary()
-
-    tracker = getattr(request.app.state, "metrics", None)
-    if tracker is None:
+    if metrics_store is None:
         return {
             "totals": {
                 "total_requests": 0,
@@ -589,31 +584,7 @@ async def metrics_summary(request: Request):
             },
             "uptime_seconds": 0.0,
         }
-
-    snap = tracker.snapshot()
-    return {
-        "totals": {
-            "total_requests": snap.total_requests,
-            "cache_hits": snap.cache_hits,
-            "cache_misses": snap.cache_misses,
-            "total_savings_usd": round(snap.total_savings_usd, 6),
-            "total_cost_usd": round(snap.total_cost_usd, 6),
-            "total_prompt_tokens": snap.total_prompt_tokens,
-            "total_completion_tokens": snap.total_completion_tokens,
-            "total_tokens": snap.total_tokens,
-            "total_tokens_saved_estimate": snap.total_tokens_saved_estimate,
-            "requests_routed": snap.requests_routed,
-            "requests_rejected": snap.requests_rejected,
-            "pipeline_errors": snap.pipeline_errors,
-        },
-        "rates": {
-            "cache_hit_rate": round(tracker.cache_hit_rate, 2),
-            "avg_savings_per_request_usd": round(tracker.avg_savings_per_request_usd, 6),
-            "avg_ttfb_ms": round(snap.avg_ttfb_ms, 2),
-            "avg_stream_duration_ms": round(snap.avg_stream_duration_ms, 2),
-        },
-        "uptime_seconds": round(snap.uptime_seconds, 1),
-    }
+    return metrics_store.summary()
 
 
 @router.get("/metrics/summary/v2")
@@ -623,12 +594,7 @@ async def metrics_summary_v2(request: Request, window: str = "7d"):
     enabled_tabs = _enabled_optimization_ids(config)
     selected_window = window if window in WINDOW_TO_SECONDS else "7d"
     metrics_store = getattr(request.app.state, "metrics_store", None)
-    if metrics_store is not None:
-        return metrics_store.summary_v2(enabled_tabs=enabled_tabs, window=selected_window)
-
-    tracker = getattr(request.app.state, "metrics", None)
-
-    if tracker is None:
+    if metrics_store is None:
         return {
             "overall": {
                 "total_savings_usd": 0.0,
@@ -642,55 +608,7 @@ async def metrics_summary_v2(request: Request, window: str = "7d"):
             "series": [],
             "optimization_series": [],
         }
-
-    snap = tracker.snapshot()
-    optimizations = []
-    observed = dict(snap.optimization_totals)
-    for optimization_id in enabled_tabs:
-        observed.setdefault(
-            optimization_id,
-            {
-                "optimization_id": optimization_id,
-                "events": 0,
-                "total_savings_usd": 0.0,
-                "total_tokens_saved": 0,
-                "tokens_saved": 0,
-                "last_technique": None,
-                "last_action": None,
-                "last_details": {},
-            },
-        )
-
-    for optimization_id, aggregate in observed.items():
-        if optimization_id == "forward":
-            continue
-        optimizations.append(
-            {
-                "optimization_id": optimization_id,
-                "events": int(aggregate.get("events", 0)),
-                "total_savings_usd": round(float(aggregate.get("total_savings_usd", 0.0)), 6),
-                "total_tokens_saved": int(aggregate.get("total_tokens_saved", 0)),
-                "tokens_saved": int(aggregate.get("tokens_saved", aggregate.get("total_tokens_saved", 0))),
-                "last_technique": aggregate.get("last_technique"),
-                "last_action": aggregate.get("last_action"),
-                "last_details": aggregate.get("last_details") or {},
-            }
-        )
-
-    optimizations.sort(key=lambda entry: entry["optimization_id"])
-    return {
-        "overall": {
-            "total_savings_usd": round(snap.total_savings_usd, 6),
-            "total_tokens_saved_estimate": snap.total_tokens_saved_estimate,
-            "total_requests": snap.total_requests,
-            "uptime_seconds": round(snap.uptime_seconds, 1),
-        },
-        "window": selected_window,
-        "enabled_tabs": enabled_tabs,
-        "optimizations": optimizations,
-        "series": [],
-        "optimization_series": [],
-    }
+    return metrics_store.summary_v2(enabled_tabs=enabled_tabs, window=selected_window)
 
 
 @router.get("/dashboard")

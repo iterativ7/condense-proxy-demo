@@ -164,8 +164,8 @@ class RedisConfig(BaseModel):
 class MetricsConfig(BaseModel):
     enabled: bool = True
     endpoint: str = "/metrics"
-    backend: Literal["sqlite", "memory"] = "sqlite"
-    sqlite_path: str = ".condense/metrics.sqlite3"
+    backend: Literal["postgres"] = "postgres"
+    postgres_dsn: str = "postgresql://condense:condense@localhost:5432/condense"
 
 
 class HeadersConfig(BaseModel):

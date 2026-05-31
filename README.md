@@ -75,8 +75,8 @@ deployment:
 metrics:
   enabled: true
   endpoint: "/metrics"
-  backend: "sqlite"               # sqlite | memory
-  sqlite_path: ".condense/metrics.sqlite3"
+  backend: "postgres"
+  postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
 
 optimizations:
   - id: "exact_cache"
@@ -380,6 +380,10 @@ docker compose up -d --build
 ```
 
 The Docker healthcheck now uses Python stdlib (no curl dependency required in image).
+By default, `docker-compose.yml` loads `condense.docker.postgres.yaml` and persists
+Postgres state into `./.docker/postgres-data` via bind mount. That directory survives
+`docker compose down` and `docker compose down -v`; data is removed only if files are
+explicitly deleted from disk.
 
 ## Tests
 

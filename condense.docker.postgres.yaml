@@ -1,40 +1,45 @@
-# Condense + Google Gemini (LiteLLM). Requires GEMINI_API_KEY in the environment.
-
+# Docker-first config for persistent Postgres-backed dashboard metrics.
 upstream:
-  url: "https://generativelanguage.googleapis.com/v1beta"
+  url: "http://host.docker.internal:11434"
   timeout_seconds: 300
-  api_key_env: "GEMINI_API_KEY"
 
 deployment:
   mode: "standalone"
-  host: "127.0.0.1"
-  port: 8090
+  host: "0.0.0.0"
+  port: 8080
 
 optimizations:
-  - id: "exact_cache"
+  - id: "cache"
     type: "cache"
     enabled: true
     config:
-      exact:
-        enabled: true
-        backend: "memory"
-        max_size: 10000
-        ttl_seconds: 3600
-      non_deterministic: "skip"
-
+      strategies:
+        exact:
+          enabled: true
+          backend: "memory"
+          max_size: 10000
+          ttl_seconds: 3600
+          non_deterministic: "skip"
   - id: "provider_cache"
     type: "provider_cache"
     enabled: false
-    depends_on: ["exact_cache"]
+    depends_on: ["cache"]
     config: {}
-
   - id: "routing"
     type: "routing"
     enabled: false
     depends_on: ["provider_cache"]
     config:
       rules: []
-
+  - id: "compression"
+    type: "compression"
+    enabled: false
+    depends_on: ["cache"]
+    config:
+      compressor_type: "fusion"
+      fusion:
+        aggressive: true
+        enable_rewind: false
   - id: "budget"
     type: "budget"
     enabled: true
@@ -45,13 +50,13 @@ optimizations:
 
 redis:
   enabled: false
-  url: "redis://localhost:6379"
+  url: "redis://redis:6379"
 
 metrics:
   enabled: true
   endpoint: "/metrics"
   backend: "postgres"
-  postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
+  postgres_dsn: "postgresql://condense:condense@postgres:5432/condense"
 
 headers:
   add_savings_headers: true

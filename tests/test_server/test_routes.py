@@ -475,11 +475,6 @@ deployment:
         assert after["totals"]["total_prompt_tokens"] == 12
         assert after["totals"]["total_completion_tokens"] == 8
         assert after["totals"]["total_tokens"] == 20
-        tracker_snapshot = client.app.state.metrics.snapshot()
-        assert after["totals"]["total_requests"] == tracker_snapshot.total_requests
-        assert after["totals"]["total_prompt_tokens"] == tracker_snapshot.total_prompt_tokens
-        assert after["totals"]["total_completion_tokens"] == tracker_snapshot.total_completion_tokens
-        assert after["totals"]["total_tokens"] == tracker_snapshot.total_tokens
 
     def test_metrics_summary_token_savings_increase_on_cache_hit(self, client, monkeypatch):
         """Token savings estimate grows when a request is served from cache."""
@@ -583,7 +578,6 @@ deployment:
     def test_metrics_summary_persists_across_restart(self, tmp_path, monkeypatch):
         """SQL-backed summary totals survive app restarts."""
         reset_config_cache()
-        db_path = tmp_path / "metrics.sqlite3"
         config_file = tmp_path / "condense.yaml"
         config_file.write_text(f"""
 upstream:
@@ -604,8 +598,8 @@ deployment:
 metrics:
   enabled: true
   endpoint: "/metrics"
-  backend: "sqlite"
-  sqlite_path: "{db_path}"
+  backend: "postgres"
+  postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
 """)
         response_data = {
             "id": "chatcmpl-persist-1",

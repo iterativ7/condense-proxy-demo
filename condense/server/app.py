@@ -12,8 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from condense import __version__
 from condense.cache.memory import InMemoryCache
 from condense.config.loader import load_config
-from condense.metrics.sqlite_store import SqliteMetricsStore
-from condense.metrics.tracker import MetricsTracker
+from condense.metrics.postgres_store import PostgresMetricsStore
 from condense.server.middleware import TimingMiddleware, RequestLoggingMiddleware
 from condense.server.routes import router
 from condense.session.store import SessionStore
@@ -110,20 +109,12 @@ def create_app(config_path: str = None) -> FastAPI:
             follow_redirects=True,
         )
 
-        # Metrics tracker
-        app.state.metrics = MetricsTracker()
         app.state.metrics_store = None
-        if config.metrics.enabled and config.metrics.backend == "sqlite":
-            configured_path = Path(config.metrics.sqlite_path)
-            if not configured_path.is_absolute():
-                if config_path:
-                    configured_path = (Path(config_path).resolve().parent / configured_path).resolve()
-                else:
-                    configured_path = configured_path.resolve()
-            app.state.metrics_store = SqliteMetricsStore(configured_path)
-            logger.info("Using SQLite metrics store at %s", configured_path)
+        if config.metrics.enabled:
+            app.state.metrics_store = PostgresMetricsStore(config.metrics.postgres_dsn)
+            logger.info("Using Postgres metrics store")
         else:
-            logger.info("SQLite metrics persistence disabled")
+            logger.info("Metrics disabled")
 
         # Circuit breaker
         app.state.circuit_breaker = CircuitBreaker(

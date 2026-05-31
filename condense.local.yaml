@@ -75,8 +75,8 @@ redis:
 metrics:
   enabled: true
   endpoint: "/metrics"
-  backend: "sqlite"
-  sqlite_path: ".condense/metrics.sqlite3"
+  backend: "postgres"
+  postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
 
 headers:
   add_savings_headers: true

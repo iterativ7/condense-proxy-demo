@@ -1,14 +1,11 @@
-"""SQLite-backed persistent metrics store for dashboard summaries."""
+"""Postgres-backed persistent metrics store for dashboard summaries."""
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
-from pathlib import Path
 from typing import Any
-
 
 WINDOW_TO_SECONDS: dict[str, int | None] = {
     "24h": 24 * 60 * 60,
@@ -18,18 +15,21 @@ WINDOW_TO_SECONDS: dict[str, int | None] = {
 }
 
 
-class SqliteMetricsStore:
-    """Thread-safe SQLite metrics recorder + query service."""
+class PostgresMetricsStore:
+    """Thread-safe Postgres metrics recorder + query service."""
 
-    def __init__(self, db_path: Path):
-        self._db_path = db_path
+    def __init__(self, dsn: str):
+        try:
+            from psycopg import connect
+            from psycopg.rows import dict_row
+        except ImportError as exc:  # pragma: no cover - guarded at runtime
+            raise ImportError(
+                "Postgres metrics backend requires psycopg. Install dependencies and retry."
+            ) from exc
+        self._dsn = dsn
         self._lock = threading.Lock()
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._conn = connect(self._dsn, autocommit=False, row_factory=dict_row)
         with self._lock:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
             self._init_schema()
 
     def close(self) -> None:
@@ -37,55 +37,81 @@ class SqliteMetricsStore:
             self._conn.close()
 
     def _init_schema(self) -> None:
-        self._conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS metrics_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                recorded_at REAL NOT NULL,
-                cache_hit INTEGER NOT NULL,
-                savings_usd REAL NOT NULL,
-                cost_usd REAL NOT NULL,
-                prompt_tokens INTEGER NOT NULL,
-                completion_tokens INTEGER NOT NULL,
-                total_tokens INTEGER NOT NULL,
-                tokens_saved_estimate INTEGER NOT NULL,
-                routed INTEGER NOT NULL,
-                rejected INTEGER NOT NULL,
-                latency_ms REAL NOT NULL,
-                ttfb_ms REAL NOT NULL,
-                stream_duration_ms REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_metrics_events_recorded_at
-                ON metrics_events(recorded_at);
-
-            CREATE TABLE IF NOT EXISTS metrics_optimization_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                request_event_id INTEGER NOT NULL,
-                recorded_at REAL NOT NULL,
-                optimization_id TEXT NOT NULL,
-                technique TEXT,
-                action TEXT,
-                savings_usd REAL NOT NULL,
-                tokens_saved INTEGER NOT NULL,
-                details_json TEXT NOT NULL,
-                FOREIGN KEY(request_event_id) REFERENCES metrics_events(id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_metrics_opt_events_recorded_at
-                ON metrics_optimization_events(recorded_at);
-            CREATE INDEX IF NOT EXISTS idx_metrics_opt_events_opt_id
-                ON metrics_optimization_events(optimization_id);
-            """
-        )
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS metrics_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    cache_hit BOOLEAN NOT NULL,
+                    savings_usd DOUBLE PRECISION NOT NULL,
+                    cost_usd DOUBLE PRECISION NOT NULL,
+                    prompt_tokens BIGINT NOT NULL,
+                    completion_tokens BIGINT NOT NULL,
+                    total_tokens BIGINT NOT NULL,
+                    tokens_saved_estimate BIGINT NOT NULL,
+                    routed BOOLEAN NOT NULL,
+                    rejected BOOLEAN NOT NULL,
+                    latency_ms DOUBLE PRECISION NOT NULL,
+                    ttfb_ms DOUBLE PRECISION NOT NULL,
+                    stream_duration_ms DOUBLE PRECISION NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_metrics_events_recorded_at
+                ON metrics_events(recorded_at)
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS metrics_optimization_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    request_event_id BIGINT NOT NULL REFERENCES metrics_events(id) ON DELETE CASCADE,
+                    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    optimization_id TEXT NOT NULL,
+                    technique TEXT,
+                    action TEXT,
+                    savings_usd DOUBLE PRECISION NOT NULL,
+                    tokens_saved BIGINT NOT NULL,
+                    details_json JSONB NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_metrics_opt_events_recorded_at
+                ON metrics_optimization_events(recorded_at)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_metrics_opt_events_opt_id
+                ON metrics_optimization_events(optimization_id)
+                """
+            )
         self._conn.commit()
 
+    @staticmethod
+    def _window_clause(window: str) -> tuple[str, tuple[Any, ...]]:
+        seconds = WINDOW_TO_SECONDS.get(window, WINDOW_TO_SECONDS["7d"])
+        if seconds is None:
+            return "", ()
+        return "WHERE recorded_at >= NOW() - (%s * INTERVAL '1 second')", (int(seconds),)
+
+    @staticmethod
+    def _bucket_granularity(window: str) -> str:
+        if window == "24h":
+            return "hour"
+        return "day"
+
     def record_request(self, request_metrics: dict[str, Any]) -> None:
-        now = time.time()
         updates = request_metrics.get("optimization_updates") or []
-        with self._lock:
-            cursor = self._conn.execute(
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
                 """
                 INSERT INTO metrics_events (
-                    recorded_at,
                     cache_hit,
                     savings_usd,
                     cost_usd,
@@ -98,42 +124,40 @@ class SqliteMetricsStore:
                     latency_ms,
                     ttfb_ms,
                     stream_duration_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
-                    now,
-                    1 if request_metrics.get("cache_hit") else 0,
+                    bool(request_metrics.get("cache_hit")),
                     float(request_metrics.get("savings_usd") or 0.0),
                     float(request_metrics.get("cost_usd") or 0.0),
                     int(request_metrics.get("prompt_tokens") or 0),
                     int(request_metrics.get("completion_tokens") or 0),
                     int(request_metrics.get("total_tokens") or 0),
                     int(request_metrics.get("tokens_saved_estimate") or 0),
-                    1 if request_metrics.get("routed") else 0,
-                    1 if request_metrics.get("rejected") else 0,
+                    bool(request_metrics.get("routed")),
+                    bool(request_metrics.get("rejected")),
                     float(request_metrics.get("latency_ms") or 0.0),
                     float(request_metrics.get("ttfb_ms") or 0.0),
                     float(request_metrics.get("stream_duration_ms") or 0.0),
                 ),
             )
-            request_event_id = cursor.lastrowid
+            request_event_id = int(cur.fetchone()["id"])
             for update in updates:
-                self._conn.execute(
+                cur.execute(
                     """
                     INSERT INTO metrics_optimization_events (
                         request_event_id,
-                        recorded_at,
                         optimization_id,
                         technique,
                         action,
                         savings_usd,
                         tokens_saved,
                         details_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
                     """,
                     (
                         request_event_id,
-                        now,
                         str(update.get("optimization_id") or "unknown"),
                         update.get("technique"),
                         update.get("action"),
@@ -142,44 +166,31 @@ class SqliteMetricsStore:
                         json.dumps(update.get("details") or {}),
                     ),
                 )
-            self._conn.commit()
-
-    @staticmethod
-    def _window_clause(window: str) -> tuple[str, tuple[Any, ...]]:
-        seconds = WINDOW_TO_SECONDS.get(window, WINDOW_TO_SECONDS["7d"])
-        if seconds is None:
-            return "", ()
-        cutoff = time.time() - seconds
-        return "WHERE recorded_at >= ?", (cutoff,)
-
-    @staticmethod
-    def _bucket_format(window: str) -> str:
-        if window == "24h":
-            return "%Y-%m-%dT%H:00:00Z"
-        return "%Y-%m-%dT00:00:00Z"
+        self._conn.commit()
 
     def summary(self) -> dict[str, Any]:
-        with self._lock:
-            row = self._conn.execute(
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
                 """
                 SELECT
                     COUNT(*) AS total_requests,
-                    COALESCE(SUM(cache_hit), 0) AS cache_hits,
-                    COALESCE(SUM(CASE WHEN cache_hit = 0 THEN 1 ELSE 0 END), 0) AS cache_misses,
+                    COALESCE(SUM(CASE WHEN cache_hit THEN 1 ELSE 0 END), 0) AS cache_hits,
+                    COALESCE(SUM(CASE WHEN NOT cache_hit THEN 1 ELSE 0 END), 0) AS cache_misses,
                     COALESCE(SUM(savings_usd), 0.0) AS total_savings_usd,
                     COALESCE(SUM(cost_usd), 0.0) AS total_cost_usd,
                     COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
                     COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
                     COALESCE(SUM(total_tokens), 0) AS total_tokens,
                     COALESCE(SUM(tokens_saved_estimate), 0) AS total_tokens_saved_estimate,
-                    COALESCE(SUM(routed), 0) AS requests_routed,
-                    COALESCE(SUM(rejected), 0) AS requests_rejected,
+                    COALESCE(SUM(CASE WHEN routed THEN 1 ELSE 0 END), 0) AS requests_routed,
+                    COALESCE(SUM(CASE WHEN rejected THEN 1 ELSE 0 END), 0) AS requests_rejected,
                     COALESCE(AVG(NULLIF(ttfb_ms, 0)), 0.0) AS avg_ttfb_ms,
                     COALESCE(AVG(NULLIF(stream_duration_ms, 0)), 0.0) AS avg_stream_duration_ms,
-                    COALESCE(MIN(recorded_at), 0.0) AS first_recorded_at
+                    MIN(recorded_at) AS first_recorded_at
                 FROM metrics_events
                 """
-            ).fetchone()
+            )
+            row = cur.fetchone()
 
         total_requests = int(row["total_requests"])
         cache_hits = int(row["cache_hits"])
@@ -187,8 +198,12 @@ class SqliteMetricsStore:
         total_savings_usd = float(row["total_savings_usd"])
         cache_hit_rate = (cache_hits / (cache_hits + cache_misses) * 100.0) if (cache_hits + cache_misses) > 0 else 0.0
         avg_savings_per_request_usd = total_savings_usd / total_requests if total_requests > 0 else 0.0
-        first_recorded_at = float(row["first_recorded_at"] or 0.0)
-        uptime_seconds = max(0.0, time.time() - first_recorded_at) if first_recorded_at > 0 else 0.0
+        uptime_seconds = 0.0
+        if row["first_recorded_at"] is not None:
+            with self._lock, self._conn.cursor() as cur:
+                cur.execute("SELECT EXTRACT(EPOCH FROM (NOW() - %s::timestamptz)) AS uptime_seconds", (row["first_recorded_at"],))
+                uptime_seconds = float(cur.fetchone()["uptime_seconds"] or 0.0)
+
         return {
             "totals": {
                 "total_requests": total_requests,
@@ -215,9 +230,9 @@ class SqliteMetricsStore:
 
     def summary_v2(self, *, enabled_tabs: list[str], window: str = "7d") -> dict[str, Any]:
         where_clause, params = self._window_clause(window)
-        bucket_format = self._bucket_format(window)
-        with self._lock:
-            overall = self._conn.execute(
+        bucket_granularity = self._bucket_granularity(window)
+        with self._lock, self._conn.cursor() as cur:
+            cur.execute(
                 f"""
                 SELECT
                     COUNT(*) AS total_requests,
@@ -227,10 +242,12 @@ class SqliteMetricsStore:
                 {where_clause}
                 """,
                 params,
-            ).fetchone()
-            first_recorded = self._conn.execute("SELECT COALESCE(MIN(recorded_at), 0.0) AS first_recorded_at FROM metrics_events").fetchone()
+            )
+            overall = cur.fetchone()
+            cur.execute("SELECT MIN(recorded_at) AS first_recorded_at FROM metrics_events")
+            first_recorded = cur.fetchone()
 
-            optimization_rows = self._conn.execute(
+            cur.execute(
                 f"""
                 SELECT
                     optimization_id,
@@ -242,26 +259,26 @@ class SqliteMetricsStore:
                 GROUP BY optimization_id
                 """,
                 params,
-            ).fetchall()
+            )
+            optimization_rows = cur.fetchall()
 
-            latest_rows = self._conn.execute(
+            cur.execute(
                 """
-                SELECT
+                SELECT DISTINCT ON (optimization_id)
                     optimization_id,
                     technique,
                     action,
                     details_json
                 FROM metrics_optimization_events
-                WHERE id IN (
-                    SELECT MAX(id) FROM metrics_optimization_events GROUP BY optimization_id
-                )
+                ORDER BY optimization_id, id DESC
                 """
-            ).fetchall()
+            )
+            latest_rows = cur.fetchall()
 
-            series_rows = self._conn.execute(
+            cur.execute(
                 f"""
                 SELECT
-                    strftime('{bucket_format}', recorded_at, 'unixepoch') AS bucket,
+                    to_char(date_trunc('{bucket_granularity}', recorded_at), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS bucket,
                     COUNT(*) AS total_requests,
                     COALESCE(SUM(savings_usd), 0.0) AS total_savings_usd,
                     COALESCE(SUM(tokens_saved_estimate), 0) AS total_tokens_saved_estimate
@@ -271,13 +288,14 @@ class SqliteMetricsStore:
                 ORDER BY bucket
                 """,
                 params,
-            ).fetchall()
+            )
+            series_rows = cur.fetchall()
 
-            optimization_series_rows = self._conn.execute(
+            cur.execute(
                 f"""
                 SELECT
                     optimization_id,
-                    strftime('{bucket_format}', recorded_at, 'unixepoch') AS bucket,
+                    to_char(date_trunc('{bucket_granularity}', recorded_at), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS bucket,
                     COUNT(*) AS events,
                     COALESCE(SUM(savings_usd), 0.0) AS total_savings_usd,
                     COALESCE(SUM(tokens_saved), 0) AS total_tokens_saved
@@ -287,13 +305,14 @@ class SqliteMetricsStore:
                 ORDER BY optimization_id, bucket
                 """,
                 params,
-            ).fetchall()
+            )
+            optimization_series_rows = cur.fetchall()
 
         latest_map = {
             str(row["optimization_id"]): {
                 "last_technique": row["technique"],
                 "last_action": row["action"],
-                "last_details": json.loads(row["details_json"]) if row["details_json"] else {},
+                "last_details": row["details_json"] if isinstance(row["details_json"], dict) else {},
             }
             for row in latest_rows
         }
@@ -339,9 +358,13 @@ class SqliteMetricsStore:
                 }
             )
 
-        first_recorded_at = float(first_recorded["first_recorded_at"] or 0.0)
-        uptime_seconds = max(0.0, time.time() - first_recorded_at) if first_recorded_at > 0 else 0.0
+        uptime_seconds = 0.0
+        if first_recorded["first_recorded_at"] is not None:
+            with self._lock, self._conn.cursor() as cur:
+                cur.execute("SELECT EXTRACT(EPOCH FROM (NOW() - %s::timestamptz)) AS uptime_seconds", (first_recorded["first_recorded_at"],))
+                uptime_seconds = float(cur.fetchone()["uptime_seconds"] or 0.0)
 
+        safe_window = window if window in WINDOW_TO_SECONDS else "7d"
         return {
             "overall": {
                 "total_savings_usd": round(float(overall["total_savings_usd"]), 6),
@@ -349,7 +372,7 @@ class SqliteMetricsStore:
                 "total_requests": int(overall["total_requests"]),
                 "uptime_seconds": round(uptime_seconds, 1),
             },
-            "window": window if window in WINDOW_TO_SECONDS else "7d",
+            "window": safe_window,
             "enabled_tabs": enabled_tabs,
             "optimizations": sorted(
                 [entry for entry in observed.values() if entry["optimization_id"] != "forward"],

@@ -109,7 +109,7 @@ redis:
   url: "redis://localhost:6379"
 
 metrics:
-  enabled: true
+  enabled: false
   endpoint: "/metrics"
 
 headers:
