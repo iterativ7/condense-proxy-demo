@@ -5,6 +5,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi.responses import StreamingResponse
 from condense.server.app import create_app
 from condense.config.loader import reset_config_cache
 
@@ -49,6 +50,29 @@ deployment:
 
 
 class TestChatCompletionsRoute:
+    class _FakeChunk:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def model_dump(self):
+            return self._payload
+
+    class _FakeAsyncStream:
+        def __init__(self, payloads):
+            self._payloads = payloads
+
+        def __aiter__(self):
+            self._iter = iter(self._payloads)
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(0.001)
+            try:
+                payload = next(self._iter)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+            return TestChatCompletionsRoute._FakeChunk(payload)
+
     def test_passthrough(self, client, monkeypatch):
         """Request is forwarded to upstream and response returned."""
         response_data = {
@@ -77,6 +101,241 @@ class TestChatCompletionsRoute:
         assert resp.status_code == 200
         data = resp.json()
         assert data["id"] == "chatcmpl-123"
+
+    def test_streaming_response_passthrough(self, client, monkeypatch):
+        """stream=true returns SSE chunks with [DONE] trailer."""
+        stream_chunks = [
+            {
+                "id": "chatcmpl-stream-1",
+                "model": "gpt-4o",
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            },
+            {
+                "id": "chatcmpl-stream-1",
+                "model": "gpt-4o",
+                "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            },
+        ]
+
+        async def fake_acompletion(**kwargs):
+            if kwargs.get("stream"):
+                return TestChatCompletionsRoute._FakeAsyncStream(stream_chunks)
+            return {
+                "id": "chatcmpl-123",
+                "choices": [{"message": {"role": "assistant", "content": "fallback"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        monkeypatch.setattr("condense.pipeline.stream_forwarder.litellm.acompletion", fake_acompletion)
+        monkeypatch.setattr("condense.pipeline.steps.forward_step.litellm.acompletion", fake_acompletion)
+
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": True,
+                "temperature": 0,
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            assert "text/event-stream" in resp.headers.get("content-type", "")
+            assert resp.headers.get("x-condense-stream-mode") == "live_upstream"
+            assert resp.headers.get("x-condense-stream-protocol") == "openai_chat_sse"
+            body = "".join(part for part in resp.iter_text())
+
+        assert "data: [DONE]" in body
+        assert '"content": "Hello"' in body
+
+    def test_streaming_cache_hit_replays_sse(self, client, monkeypatch):
+        """Cached response can be replayed as SSE for stream=true requests."""
+        response_data = {
+            "id": "chatcmpl-cache-1",
+            "choices": [{"message": {"role": "assistant", "content": "Cached hello"}, "finish_reason": "stop", "index": 0}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+        }
+
+        async def fake_acompletion(**kwargs):
+            return response_data
+
+        monkeypatch.setattr("condense.pipeline.steps.forward_step.litellm.acompletion", fake_acompletion)
+
+        request_body = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Replay this from cache"}],
+            "temperature": 0,
+        }
+        warm = client.post("/v1/chat/completions", json=request_body)
+        assert warm.status_code == 200
+
+        with client.stream("POST", "/v1/chat/completions", json={**request_body, "stream": True}) as resp:
+            assert resp.status_code == 200
+            assert resp.headers.get("x-condense-stream-mode") == "cache_replay"
+            assert resp.headers.get("x-condense-stream-protocol") == "openai_chat_sse"
+            body = "".join(part for part in resp.iter_text())
+
+        assert "data: [DONE]" in body
+        assert '"content": "Cached hello"' in body
+
+    def test_streaming_budget_reject_returns_json(self, tmp_path):
+        """Reject path remains JSON for stream=true requests."""
+        reset_config_cache()
+        config_file = tmp_path / "condense.yaml"
+        config_file.write_text("""
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "cache"
+    type: "cache"
+    enabled: false
+    config: {}
+  - id: "budget"
+    type: "budget"
+    enabled: true
+    config:
+      max_turns_per_session: 0
+deployment:
+  port: 8080
+""")
+        app = create_app(str(config_file))
+        with TestClient(app) as local_client:
+            resp = local_client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                },
+            )
+        assert resp.status_code == 429
+        assert "application/json" in resp.headers.get("content-type", "")
+        data = resp.json()
+        assert "error" in data
+
+    def test_streaming_with_compression_enabled_still_streams(self, tmp_path, monkeypatch):
+        """Pre-forward compression step should remain compatible with streaming."""
+        reset_config_cache()
+        config_file = tmp_path / "condense.yaml"
+        config_file.write_text("""
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "cache"
+    type: "cache"
+    enabled: false
+    config: {}
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    config:
+      compressor_type: "fusion"
+deployment:
+  port: 8080
+""")
+        stream_chunks = [
+            {
+                "id": "chatcmpl-stream-compression",
+                "model": "gpt-4o",
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            },
+            {
+                "id": "chatcmpl-stream-compression",
+                "model": "gpt-4o",
+                "choices": [{"index": 0, "delta": {"content": "OK"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
+            },
+        ]
+
+        async def fake_acompletion(**kwargs):
+            return TestChatCompletionsRoute._FakeAsyncStream(stream_chunks)
+
+        monkeypatch.setattr("condense.pipeline.stream_forwarder.litellm.acompletion", fake_acompletion)
+
+        app = create_app(str(config_file))
+        with TestClient(app) as local_client:
+            with local_client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": "Summarize this text"}],
+                    "stream": True,
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                body = "".join(part for part in resp.iter_text())
+        assert "data: [DONE]" in body
+
+    def test_streaming_uses_circuit_breaker_bypass(self, client, monkeypatch):
+        """When breaker is open, stream requests use direct streaming path."""
+        called = {"value": False}
+
+        async def fake_direct_forward_stream(body, config, authorization):
+            called["value"] = True
+
+            async def _gen():
+                yield b"data: [DONE]\n\n"
+
+            return StreamingResponse(_gen(), media_type="text/event-stream")
+
+        monkeypatch.setattr("condense.server.routes._direct_forward_stream", fake_direct_forward_stream)
+        breaker = client.app.state.circuit_breaker
+        breaker._failure_count = breaker.threshold
+        breaker._last_failure_time = time.time()
+
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": True,
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(part for part in resp.iter_text())
+
+        assert called["value"] is True
+        assert "data: [DONE]" in body
+
+    def test_streaming_unknown_protocol_uses_generic_adapter(self, client, monkeypatch):
+        """Unknown stream protocol should gracefully fallback to generic adapter."""
+        stream_chunks = [
+            {"id": "future-1", "model": "future/provider", "content": "hello "},
+            {"id": "future-1", "model": "future/provider", "content": "world"},
+        ]
+
+        async def fake_acompletion(**kwargs):
+            if kwargs.get("stream"):
+                return TestChatCompletionsRoute._FakeAsyncStream(stream_chunks)
+            return {
+                "id": "chatcmpl-123",
+                "choices": [{"message": {"role": "assistant", "content": "fallback"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        monkeypatch.setattr("condense.pipeline.stream_forwarder.litellm.acompletion", fake_acompletion)
+
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": True,
+                "stream_protocol": "future_vendor_stream",
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers.get("x-condense-stream-protocol") == "generic_json_sse"
+            body = "".join(part for part in resp.iter_text())
+
+        assert "data: [DONE]" in body
+        assert '"content": "hello "' in body
 
     def test_condense_headers(self, client, monkeypatch):
         """Response includes X-Condense-* headers."""

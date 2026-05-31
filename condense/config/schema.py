@@ -9,12 +9,15 @@ class UpstreamConfig(BaseModel):
     url: str = "https://api.openai.com/v1"
     timeout_seconds: int = 300
     api_key_env: Optional[str] = None
+    # Stream adapter name used by Condense (`openai_chat_sse` by default).
+    stream_protocol: str = "openai_chat_sse"
 
 
 class DeploymentConfig(BaseModel):
     mode: str = "behind-gateway"  # "behind-gateway" | "standalone"
     host: str = "0.0.0.0"
     port: int = 8080
+    streaming_enabled: bool = True
 
 
 class ExactCacheConfig(BaseModel):

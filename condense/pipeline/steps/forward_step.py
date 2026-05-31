@@ -59,38 +59,45 @@ class ForwardStep(BaseStep):
             return raw.dict()
         return dict(raw)
 
+    def build_payload(self, ctx: PipelineContext) -> dict:
+        payload = {
+            "model": ctx.request.get("model", ""),
+            "messages": ctx.request.get("messages", []),
+            "api_base": self.upstream_url,
+            "timeout": self.timeout,
+            "drop_params": True,
+            **{
+                key: value
+                for key, value in ctx.request.items()
+                if key not in {"model", "messages", "stream_protocol"}
+            },
+        }
+        api_key = self._resolve_api_key(ctx)
+        if api_key:
+            payload["api_key"] = api_key
+        return payload
+
+    def attach_estimated_cost(self, ctx: PipelineContext, response_data: dict) -> dict:
+        usage = response_data.get("usage", {})
+        estimated_cost = self._estimate_cost(
+            ctx.request.get("model", ""),
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
+        response_data["_condense_estimated_cost"] = estimated_cost
+        ctx.metadata["estimated_cost"] = estimated_cost
+        return response_data
+
     async def execute(self, ctx: PipelineContext) -> StepResult:
         try:
-            payload = {
-                "model": ctx.request.get("model", ""),
-                "messages": ctx.request.get("messages", []),
-                "api_base": self.upstream_url,
-                "timeout": self.timeout,
-                "drop_params": True,
-                **{
-                    key: value
-                    for key, value in ctx.request.items()
-                    if key not in {"model", "messages"}
-                },
-            }
-            api_key = self._resolve_api_key(ctx)
-            if api_key:
-                payload["api_key"] = api_key
-
+            payload = self.build_payload(ctx)
             raw_response = await litellm.acompletion(**payload)
             response_data = self._to_dict_response(raw_response)
 
             # Estimate cost from usage (for budget tracking)
+            self.attach_estimated_cost(ctx, response_data)
             usage = response_data.get("usage", {})
-            estimated_cost = self._estimate_cost(
-                ctx.request.get("model", ""),
-                usage.get("prompt_tokens", 0),
-                usage.get("completion_tokens", 0),
-            )
-
-            # Store estimated cost in response for cache savings calculation
-            response_data["_condense_estimated_cost"] = estimated_cost
-            ctx.metadata["estimated_cost"] = estimated_cost
+            estimated_cost = response_data.get("_condense_estimated_cost", 0.0)
 
             prompt_tokens = int(usage.get("prompt_tokens") or 0)
             completion_tokens = int(usage.get("completion_tokens") or 0)

@@ -8,6 +8,9 @@ CACHE_KEY_PARAMS = [
     "temperature", "top_p", "max_tokens", "stop",
     "response_format", "seed",
 ]
+# NOTE:
+# - "stream" and "stream_options" are intentionally excluded so stream/non-stream
+#   requests share the same semantic cache entry and only response transport differs.
 
 
 def compute_cache_key(request: dict, namespace: str = "") -> str:

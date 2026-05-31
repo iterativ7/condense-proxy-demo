@@ -43,10 +43,15 @@ class TestCacheKey:
         key = compute_cache_key(request)
         assert ":" not in key  # No namespace prefix (just hex chars)
 
-    def test_ignores_extra_params(self):
-        """Non-cache params should be ignored."""
+    def test_ignores_stream_transport_params(self):
+        """Streaming transport flags should not change cache identity."""
         req1 = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}
-        req2 = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}], "stream": True}
+        req2 = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
         assert compute_cache_key(req1) == compute_cache_key(req2)
 
     def test_includes_tools_in_key(self):
