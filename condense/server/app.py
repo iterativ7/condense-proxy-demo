@@ -109,12 +109,8 @@ def create_app(config_path: str = None) -> FastAPI:
             follow_redirects=True,
         )
 
-        app.state.metrics_store = None
-        if config.metrics.enabled:
-            app.state.metrics_store = PostgresMetricsStore(config.metrics.postgres_dsn)
-            logger.info("Using Postgres metrics store")
-        else:
-            logger.info("Metrics disabled")
+        app.state.metrics_store = PostgresMetricsStore(config.metrics.postgres_dsn)
+        logger.info("Using Postgres metrics store")
 
         # Circuit breaker
         app.state.circuit_breaker = CircuitBreaker(

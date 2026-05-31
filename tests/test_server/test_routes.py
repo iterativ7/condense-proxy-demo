@@ -596,9 +596,7 @@ optimizations:
 deployment:
   port: 8080
 metrics:
-  enabled: true
   endpoint: "/metrics"
-  backend: "postgres"
   postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
 """)
         response_data = {

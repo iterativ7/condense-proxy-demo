@@ -73,9 +73,7 @@ deployment:
   streaming_enabled: true
 
 metrics:
-  enabled: true
   endpoint: "/metrics"
-  backend: "postgres"
   postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
 
 optimizations:
@@ -129,6 +127,7 @@ Resource startup is optimization-aware:
 - cache backend initializes only when `cache` optimization is enabled
 - session store initializes only when `budget` optimization is enabled
 - pipeline construction enforces required resources for enabled optimization types
+- Postgres metrics storage is mandatory and initialized at startup
 
 ## LiteLLM SDK Forwarding
 
@@ -380,7 +379,8 @@ docker compose up -d --build
 ```
 
 The Docker healthcheck now uses Python stdlib (no curl dependency required in image).
-By default, `docker-compose.yml` loads `condense.docker.postgres.yaml` and persists
+By default, `docker-compose.yml` loads `condense.default.yaml` (override with
+`CONDENSE_DOCKER_CONFIG`, for example `condense.local.yaml`) and persists
 Postgres state into `./.docker/postgres-data` via bind mount. That directory survives
 `docker compose down` and `docker compose down -v`; data is removed only if files are
 explicitly deleted from disk.

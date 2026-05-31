@@ -7,7 +7,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./${CONDENSE_DOCKER_CONFIG:-condense.docker.postgres.yaml}:/app/condense.yaml:ro
+      - ./${CONDENSE_DOCKER_CONFIG:-condense.default.yaml}:/app/condense.yaml:ro
     environment:
       - CONDENSE_CONFIG=/app/condense.yaml
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

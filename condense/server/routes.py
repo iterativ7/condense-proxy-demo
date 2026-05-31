@@ -101,9 +101,7 @@ def _record_metrics(
     ttfb_ms: float = 0.0,
     stream_duration_ms: float = 0.0,
 ) -> None:
-    metrics_store = getattr(app.state, "metrics_store", None)
-    if metrics_store is None:
-        return
+    metrics_store = app.state.metrics_store
     request_metrics = ctx.build_request_metrics(
         result,
         latency_ms,
@@ -546,9 +544,7 @@ async def health_ready(request: Request):
 @router.get("/metrics")
 async def metrics(request: Request):
     """Prometheus-compatible metrics endpoint."""
-    metrics_store = getattr(request.app.state, "metrics_store", None)
-    if metrics_store is None:
-        return PlainTextResponse("# No metrics available\n")
+    metrics_store = request.app.state.metrics_store
     summary = metrics_store.summary()
     return PlainTextResponse(
         render_prometheus_metrics(summary),
@@ -559,31 +555,7 @@ async def metrics(request: Request):
 @router.get("/metrics/summary")
 async def metrics_summary(request: Request):
     """Structured metrics summary endpoint for dashboards and UIs."""
-    metrics_store = getattr(request.app.state, "metrics_store", None)
-    if metrics_store is None:
-        return {
-            "totals": {
-                "total_requests": 0,
-                "cache_hits": 0,
-                "cache_misses": 0,
-                "total_savings_usd": 0.0,
-                "total_cost_usd": 0.0,
-                "total_prompt_tokens": 0,
-                "total_completion_tokens": 0,
-                "total_tokens": 0,
-                "total_tokens_saved_estimate": 0,
-                "requests_routed": 0,
-                "requests_rejected": 0,
-                "pipeline_errors": 0,
-            },
-            "rates": {
-                "cache_hit_rate": 0.0,
-                "avg_savings_per_request_usd": 0.0,
-                "avg_ttfb_ms": 0.0,
-                "avg_stream_duration_ms": 0.0,
-            },
-            "uptime_seconds": 0.0,
-        }
+    metrics_store = request.app.state.metrics_store
     return metrics_store.summary()
 
 
@@ -593,21 +565,7 @@ async def metrics_summary_v2(request: Request, window: str = "7d"):
     config: CondenseConfig = getattr(request.app.state, "config", load_config())
     enabled_tabs = _enabled_optimization_ids(config)
     selected_window = window if window in WINDOW_TO_SECONDS else "7d"
-    metrics_store = getattr(request.app.state, "metrics_store", None)
-    if metrics_store is None:
-        return {
-            "overall": {
-                "total_savings_usd": 0.0,
-                "total_tokens_saved_estimate": 0,
-                "total_requests": 0,
-                "uptime_seconds": 0.0,
-            },
-            "window": selected_window,
-            "enabled_tabs": enabled_tabs,
-            "optimizations": [],
-            "series": [],
-            "optimization_series": [],
-        }
+    metrics_store = request.app.state.metrics_store
     return metrics_store.summary_v2(enabled_tabs=enabled_tabs, window=selected_window)
 
 

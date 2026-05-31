@@ -14,7 +14,6 @@ class TestCondenseConfig:
         assert config.deployment.streaming_enabled is True
         assert config.optimizations == []
         assert config.failsafe.on_error == "passthrough"
-        assert config.metrics.backend == "postgres"
         assert config.metrics.postgres_dsn == "postgresql://condense:condense@localhost:5432/condense"
 
     def test_from_dict(self):

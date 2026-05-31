@@ -105,9 +105,7 @@ redis:
   # password_env: "REDIS_PASSWORD"
 
 metrics:
-  enabled: true
   endpoint: "/metrics"
-  backend: "postgres"
   postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
 
 headers:
