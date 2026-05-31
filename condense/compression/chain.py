@@ -93,7 +93,7 @@ class CompressionChain:
                     )
                     self._links.append((link, None))
 
-        active = [name for (link, inst) in self._links if inst and inst.available for name in [link.backend_name]]
+        active = [link.backend_name for link, inst in self._links if inst and inst.available]
         logger.info(
             "[chain] compression chain initialized: %s",
             " → ".join(active) if active else "(empty)",
@@ -150,16 +150,11 @@ class CompressionChain:
                 # Reassemble: merge compressed messages back in order
                 compressed_iter = iter(result.messages)
                 reassembled = []
-                target_idx = 0
                 for i, msg in enumerate(current_messages):
                     if i in passthrough_indices:
                         reassembled.append(msg)
                     else:
-                        try:
-                            reassembled.append(next(compressed_iter))
-                        except StopIteration:
-                            reassembled.append(msg)
-                        target_idx += 1
+                        reassembled.append(next(compressed_iter, msg))
 
                 current_messages = reassembled
             else:

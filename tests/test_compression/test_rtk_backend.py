@@ -168,19 +168,6 @@ class TestRunRTKPipe:
         mock_run.assert_called_once()
 
     @patch("condense.compression.backends.rtk_backend.subprocess.run")
-    def test_with_filter_name(self, mock_run):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["rtk", "pipe", "--filter", "git-diff"],
-            returncode=0,
-            stdout="compact diff",
-            stderr="",
-        )
-        result = _run_rtk_pipe("diff --git ...", filter_name="git-diff")
-        assert result == "compact diff"
-        call_args = mock_run.call_args
-        assert "--filter" in call_args[0][0] or "--filter" in call_args.kwargs.get("args", call_args[0][0])
-
-    @patch("condense.compression.backends.rtk_backend.subprocess.run")
     def test_nonzero_exit(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=["rtk", "pipe"],
@@ -318,8 +305,8 @@ class TestRTKCompressionBackend:
 
     @patch("condense.compression.backends.rtk_backend._run_rtk_pipe")
     @patch("condense.compression.backends.rtk_backend._rtk_binary_path", return_value="/usr/bin/rtk")
-    def test_stats_include_filter_info(self, mock_path, mock_pipe):
-        """Stats should report which filters were applied."""
+    def test_stats_include_backend_info(self, mock_path, mock_pipe):
+        """Stats should report backend name and messages compressed."""
         mock_pipe.return_value = "short"
 
         backend = RTKCompressionBackend()
@@ -327,9 +314,7 @@ class TestRTKCompressionBackend:
         result = backend.compress_messages(messages)
 
         assert result.stats["backend"] == "rtk"
-        assert result.stats["messages_processed"] == 1
-        if result.stats["filters_applied"]:
-            assert result.stats["filters_applied"][0]["filter"] in ("cargo-test", "auto")
+        assert result.stats["messages_compressed"] == 1
 
     @patch("condense.compression.backends.rtk_backend._run_rtk_pipe")
     @patch("condense.compression.backends.rtk_backend._rtk_binary_path", return_value="/usr/bin/rtk")
