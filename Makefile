@@ -1,4 +1,4 @@
-.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint benchmark-v2-baseline benchmark-v2-extended benchmark-v2-summary benchmark-v2-compare benchmark-v2 clean
+.PHONY: install venv-setup ui-install ui-build ensure-local-postgres start-local stop-local test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint benchmark-v2-baseline benchmark-v2-extended benchmark-v2-summary benchmark-v2-compare benchmark-v2 clean
 
 install:
 	poetry install
@@ -35,7 +35,10 @@ lint:
 format:
 	poetry run ruff format condense/ tests/
 
-start-local: venv-setup
+ensure-local-postgres:
+	bash scripts/ensure_local_postgres.sh
+
+start-local: venv-setup ensure-local-postgres
 	.venv/bin/condense start --config condense.local.yaml
 
 init:
