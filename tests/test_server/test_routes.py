@@ -102,6 +102,68 @@ class TestChatCompletionsRoute:
         data = resp.json()
         assert data["id"] == "chatcmpl-123"
 
+    def test_anthropic_messages_endpoint(self, client, monkeypatch):
+        """Anthropic-style /v1/messages request is accepted and adapted."""
+        response_data = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "model": "gpt-4o",
+            "choices": [{"message": {"role": "assistant", "content": "Hello from condense"}, "index": 0, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+        }
+
+        async def fake_acompletion(**kwargs):
+            return response_data
+
+        monkeypatch.setattr("condense.pipeline.steps.forward_step.litellm.acompletion", fake_acompletion)
+
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-3-5-sonnet",
+                "max_tokens": 256,
+                "system": "You are concise.",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+            headers={"x-api-key": "anthropic-test-key", "anthropic-version": "2023-06-01"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["type"] == "message"
+        assert data["role"] == "assistant"
+        assert data["content"][0]["text"] == "Hello from condense"
+        assert data["usage"]["input_tokens"] == 11
+        assert data["usage"]["output_tokens"] == 7
+
+    def test_anthropic_stream_returns_unsupported_error(self, client, monkeypatch):
+        """Anthropic endpoint currently rejects stream format."""
+        response_data = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "Hello"}, "index": 0, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+        async def fake_acompletion(**kwargs):
+            if kwargs.get("stream"):
+                return TestChatCompletionsRoute._FakeAsyncStream([])
+            return response_data
+
+        monkeypatch.setattr("condense.pipeline.stream_forwarder.litellm.acompletion", fake_acompletion)
+        monkeypatch.setattr("condense.pipeline.steps.forward_step.litellm.acompletion", fake_acompletion)
+
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-3-5-sonnet",
+                "max_tokens": 64,
+                "stream": True,
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+        assert resp.status_code == 400
+        assert "not yet supported" in resp.json()["error"]["message"]
+
     def test_streaming_response_passthrough(self, client, monkeypatch):
         """stream=true returns SSE chunks with [DONE] trailer."""
         stream_chunks = [

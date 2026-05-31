@@ -177,11 +177,14 @@ curl http://127.0.0.1:11434/api/tags
 
 ## API Reference (Request/Response)
 
-Primary endpoint:
+Supported request endpoints:
 
 - `POST /v1/chat/completions`
+- `POST /v1/messages`
 
-This route is OpenAI-compatible and accepts standard chat-completions payloads.
+`/v1/chat/completions` accepts standard OpenAI-style chat payloads.
+`/v1/messages` accepts Anthropic/Claude-style messages payloads and is internally
+adapted to the same pipeline/optimizer flow before forwarding upstream.
 
 Example request:
 
