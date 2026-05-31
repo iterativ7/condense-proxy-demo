@@ -21,6 +21,7 @@ from condense.cache.key import compute_cache_key
 from condense.config.loader import load_config
 from condense.config.schema import CondenseConfig
 from condense.metrics.prometheus import render_prometheus_metrics
+from condense.metrics.sqlite_store import WINDOW_TO_SECONDS
 from condense.pipeline import build_pipeline
 from condense.pipeline.context import PipelineContext
 from condense.pipeline.executor import PipelineExecutor
@@ -101,14 +102,20 @@ def _record_metrics(
     stream_duration_ms: float = 0.0,
 ) -> None:
     metrics = getattr(app.state, "metrics", None)
+    metrics_store = getattr(app.state, "metrics_store", None)
+    request_metrics = ctx.build_request_metrics(
+        result,
+        latency_ms,
+        ttfb_ms=ttfb_ms,
+        stream_duration_ms=stream_duration_ms,
+    )
     if metrics:
-        request_metrics = ctx.build_request_metrics(
-            result,
-            latency_ms,
-            ttfb_ms=ttfb_ms,
-            stream_duration_ms=stream_duration_ms,
-        )
         metrics.record_request(**request_metrics.as_record_kwargs())
+    if metrics_store:
+        try:
+            metrics_store.record_request(request_metrics.as_record_kwargs())
+        except Exception as exc:
+            logger.error("Failed to persist request metrics: %s", exc)
 
 
 def _enabled_optimization_ids(config: CondenseConfig) -> list[str]:
@@ -553,6 +560,10 @@ async def metrics(request: Request):
 @router.get("/metrics/summary")
 async def metrics_summary(request: Request):
     """Structured metrics summary endpoint for dashboards and UIs."""
+    metrics_store = getattr(request.app.state, "metrics_store", None)
+    if metrics_store is not None:
+        return metrics_store.summary()
+
     tracker = getattr(request.app.state, "metrics", None)
     if tracker is None:
         return {
@@ -606,10 +617,15 @@ async def metrics_summary(request: Request):
 
 
 @router.get("/metrics/summary/v2")
-async def metrics_summary_v2(request: Request):
+async def metrics_summary_v2(request: Request, window: str = "7d"):
     """UI-focused summary with per-optimization breakdown and dynamic tabs."""
     config: CondenseConfig = getattr(request.app.state, "config", load_config())
     enabled_tabs = _enabled_optimization_ids(config)
+    selected_window = window if window in WINDOW_TO_SECONDS else "7d"
+    metrics_store = getattr(request.app.state, "metrics_store", None)
+    if metrics_store is not None:
+        return metrics_store.summary_v2(enabled_tabs=enabled_tabs, window=selected_window)
+
     tracker = getattr(request.app.state, "metrics", None)
 
     if tracker is None:
@@ -620,8 +636,11 @@ async def metrics_summary_v2(request: Request):
                 "total_requests": 0,
                 "uptime_seconds": 0.0,
             },
+            "window": selected_window,
             "enabled_tabs": enabled_tabs,
             "optimizations": [],
+            "series": [],
+            "optimization_series": [],
         }
 
     snap = tracker.snapshot()
@@ -666,8 +685,11 @@ async def metrics_summary_v2(request: Request):
             "total_requests": snap.total_requests,
             "uptime_seconds": round(snap.uptime_seconds, 1),
         },
+        "window": selected_window,
         "enabled_tabs": enabled_tabs,
         "optimizations": optimizations,
+        "series": [],
+        "optimization_series": [],
     }
 
 

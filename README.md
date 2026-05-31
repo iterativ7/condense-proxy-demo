@@ -72,6 +72,12 @@ upstream:
 deployment:
   streaming_enabled: true
 
+metrics:
+  enabled: true
+  endpoint: "/metrics"
+  backend: "sqlite"               # sqlite | memory
+  sqlite_path: ".condense/metrics.sqlite3"
+
 optimizations:
   - id: "exact_cache"
     type: "cache"
@@ -345,8 +351,11 @@ Savings and dashboard endpoints:
   - UI-focused payload for modular savings UI.
   - Includes:
     - `overall` consolidated savings values
+    - `window` selected aggregation window (`24h`, `7d`, `30d`, `all_time`)
     - `enabled_tabs` from enabled optimizations
     - `optimizations[]` per-optimization contributions/details
+    - `series[]` bucketed totals for trend visualization
+    - `optimization_series[]` bucketed per-optimization history
 - `GET /_ui`:
   - Separate modular UI module (when built assets are present).
   - Use `make ui-build` before loading locally.

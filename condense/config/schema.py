@@ -164,6 +164,8 @@ class RedisConfig(BaseModel):
 class MetricsConfig(BaseModel):
     enabled: bool = True
     endpoint: str = "/metrics"
+    backend: Literal["sqlite", "memory"] = "sqlite"
+    sqlite_path: str = ".condense/metrics.sqlite3"
 
 
 class HeadersConfig(BaseModel):

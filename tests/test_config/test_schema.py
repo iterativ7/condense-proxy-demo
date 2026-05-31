@@ -14,6 +14,8 @@ class TestCondenseConfig:
         assert config.deployment.streaming_enabled is True
         assert config.optimizations == []
         assert config.failsafe.on_error == "passthrough"
+        assert config.metrics.backend == "sqlite"
+        assert config.metrics.sqlite_path == ".condense/metrics.sqlite3"
 
     def test_from_dict(self):
         """Config can be created from a dict (as loaded from YAML)."""

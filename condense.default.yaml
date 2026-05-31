@@ -107,6 +107,8 @@ redis:
 metrics:
   enabled: true
   endpoint: "/metrics"
+  backend: "sqlite"
+  sqlite_path: ".condense/metrics.sqlite3"
 
 headers:
   add_savings_headers: true

@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from condense import __version__
 from condense.cache.memory import InMemoryCache
 from condense.config.loader import load_config
+from condense.metrics.sqlite_store import SqliteMetricsStore
 from condense.metrics.tracker import MetricsTracker
 from condense.server.middleware import TimingMiddleware, RequestLoggingMiddleware
 from condense.server.routes import router
@@ -111,6 +112,18 @@ def create_app(config_path: str = None) -> FastAPI:
 
         # Metrics tracker
         app.state.metrics = MetricsTracker()
+        app.state.metrics_store = None
+        if config.metrics.enabled and config.metrics.backend == "sqlite":
+            configured_path = Path(config.metrics.sqlite_path)
+            if not configured_path.is_absolute():
+                if config_path:
+                    configured_path = (Path(config_path).resolve().parent / configured_path).resolve()
+                else:
+                    configured_path = configured_path.resolve()
+            app.state.metrics_store = SqliteMetricsStore(configured_path)
+            logger.info("Using SQLite metrics store at %s", configured_path)
+        else:
+            logger.info("SQLite metrics persistence disabled")
 
         # Circuit breaker
         app.state.circuit_breaker = CircuitBreaker(
@@ -128,6 +141,12 @@ def create_app(config_path: str = None) -> FastAPI:
         if cache_backend is not None and hasattr(cache_backend, "_redis"):
             try:
                 await cache_backend._redis.aclose()
+            except Exception:
+                pass
+        metrics_store = getattr(app.state, "metrics_store", None)
+        if metrics_store is not None:
+            try:
+                metrics_store.close()
             except Exception:
                 pass
 
