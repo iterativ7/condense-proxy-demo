@@ -1,0 +1,69 @@
+# Local run config for GuideLLM mock server with semantic cache only
+
+upstream:
+  url: "http://127.0.0.1:8000/v1"
+  timeout_seconds: 60
+
+deployment:
+  mode: "standalone"
+  host: "127.0.0.1"
+  port: 8090
+
+optimizations:
+  - id: "cache"
+    type: "cache"
+    enabled: true
+    config:
+      strategies:
+        exact:
+          enabled: false
+          backend: "memory"
+          max_size: 10000
+          ttl_seconds: 3600
+          non_deterministic: "skip"
+        semantic:
+          enabled: true
+          similarity_threshold: 0.95
+          embedding:
+            backend: "sentence_transformers"
+            model: "all-MiniLM-L6-v2"
+          vector_store:
+            backend: "memory"
+
+  - id: "provider_cache"
+    type: "provider_cache"
+    enabled: false
+    depends_on: ["cache"]
+    config: {}
+
+  - id: "routing"
+    type: "routing"
+    enabled: false
+    depends_on: ["provider_cache"]
+    config:
+      rules: []
+
+  - id: "budget"
+    type: "budget"
+    enabled: false
+    config:
+      max_session_cost_usd: 10.0
+      max_turns_per_session: 100
+      loop_detection_window: 5
+
+redis:
+  enabled: false
+  url: "redis://localhost:6379"
+
+metrics:
+  enabled: true
+  endpoint: "/metrics"
+
+headers:
+  add_savings_headers: true
+
+failsafe:
+  on_error: "passthrough"
+  circuit_breaker:
+    threshold: 5
+    recovery_seconds: 30

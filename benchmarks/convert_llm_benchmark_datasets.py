@@ -15,9 +15,11 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("pyarrow is required: pip install pyarrow") from exc
 
+from benchmarks.transforms.dolly import transform_dolly_row
 
 RAW_ROOT = Path("benchmarks/datasets/llm_benchmarks")
 OUT_ROOT = Path("benchmarks/datasets/converted")
+DOLLY_ROOT = RAW_ROOT / "databricks_dolly_15k"
 # Request body model (overridden at run time via --baseline-model / --proxy-model)
 DEFAULT_MODEL = "gemini/gemini-2.5-flash"
 DEFAULT_LIMIT = 50
@@ -229,6 +231,44 @@ def convert_mbpp(limit: int, model: str, seed: int) -> list[dict[str, Any]]:
     return rows
 
 
+def convert_dolly(
+    dolly_root: Path,
+    limit: int,
+    model: str,
+    seed: int,
+) -> list[dict[str, Any]]:
+    try:
+        from datasets import load_from_disk
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("datasets is required for Dolly conversion: pip install datasets") from exc
+
+    if not dolly_root.exists():
+        raise FileNotFoundError(
+            f"{dolly_root} not found. Download first with "
+            "load_dataset('databricks/databricks-dolly-15k') + save_to_disk(...)."
+        )
+
+    loaded = load_from_disk(str(dolly_root))
+    if hasattr(loaded, "keys"):
+        if "train" not in loaded:
+            raise ValueError(f"Expected a 'train' split in {dolly_root}")
+        dataset = loaded["train"]
+    else:
+        dataset = loaded
+
+    items = _take(list(dataset), limit, seed)
+    rows: list[dict[str, Any]] = []
+    for idx, item in enumerate(items):
+        rows.append(
+            transform_dolly_row(
+                item,
+                case_id=f"dolly_{idx:05d}",
+                model=model,
+            )
+        )
+    return rows
+
+
 CONVERTERS: dict[str, Callable[..., list[dict[str, Any]]]] = {
     "humaneval": lambda limit, model, seed: convert_humaneval(
         RAW_ROOT / "coding" / "humaneval", limit, model, seed
@@ -252,6 +292,7 @@ CONVERTERS: dict[str, Callable[..., list[dict[str, Any]]]] = {
         RAW_ROOT / "language" / "glue", "qqp", limit, model, seed
     ),
     "mbpp": convert_mbpp,
+    "dolly": lambda limit, model, seed: convert_dolly(DOLLY_ROOT, limit, model, seed),
 }
 
 

@@ -16,19 +16,19 @@ optimizations:
     config:
       strategies:
         exact:
-          enabled: true
+          enabled: false
           backend: "memory"
           max_size: 10000
           ttl_seconds: 3600
           non_deterministic: "skip"
-        # semantic:
-        #   enabled: true
-        #   similarity_threshold: 0.95
-        #   embedding:
-        #     backend: "sentence_transformers"
-        #     model: "all-MiniLM-L6-v2"
-        #   vector_store:
-        #     backend: "memory"
+        semantic:
+          enabled: true
+          similarity_threshold: 0.95
+          embedding:
+            backend: "sentence_transformers"
+            model: "all-MiniLM-L6-v2"
+          vector_store:
+            backend: "memory"
 
   - id: "provider_cache"
     type: "provider_cache"
@@ -50,19 +50,9 @@ optimizations:
       #   router_type: "bert"  # bert (offline ML) | mf | smallest_llm | largest_llm
       rules: []
 
-  - id: "compression"
-    type: "compression"
-    enabled: false
-    depends_on: ["cache"]
-    config:
-      compressor_type: "fusion"
-      fusion:
-        aggressive: true
-        enable_rewind: false
-
   - id: "budget"
     type: "budget"
-    enabled: true
+    enabled: false
     config:
       max_session_cost_usd: 10.0
       max_turns_per_session: 100

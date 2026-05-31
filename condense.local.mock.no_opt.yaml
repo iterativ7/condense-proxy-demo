@@ -1,0 +1,29 @@
+# Local run config for GuideLLM mock server with no optimizations
+
+upstream:
+  url: "http://127.0.0.1:8000/v1"
+  timeout_seconds: 60
+
+deployment:
+  mode: "standalone"
+  host: "127.0.0.1"
+  port: 8091
+
+optimizations: []
+
+redis:
+  enabled: false
+  url: "redis://localhost:6379"
+
+metrics:
+  enabled: true
+  endpoint: "/metrics"
+
+headers:
+  add_savings_headers: true
+
+failsafe:
+  on_error: "passthrough"
+  circuit_breaker:
+    threshold: 5
+    recovery_seconds: 30

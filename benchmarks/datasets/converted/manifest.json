@@ -1,0 +1,9 @@
+{
+  "datasets": {
+    "dolly": {
+      "path": "benchmarks/datasets/converted/dolly_50.jsonl",
+      "count": 50
+    }
+  },
+  "output_dir": "benchmarks/datasets/converted"
+}

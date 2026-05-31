@@ -113,6 +113,12 @@ See benchmarks/datasets/llm_benchmarks/README.md for the folder layout.
 
 This creates humaneval_50.jsonl, mbpp_50.jsonl, hellaswag_50.jsonl, glue_sst2_50.jsonl, glue_cola_50.jsonl. They are build inputs only; you do not need them in git if heavy and profile files already exist.
 
+If Dolly is downloaded at benchmarks/datasets/llm_benchmarks/databricks_dolly_15k:
+
+  python benchmarks/convert_llm_benchmark_datasets.py --datasets dolly --limit 50
+
+This creates dolly_50.jsonl in the same benchmark schema (`id`, `request`, `reference`, `metadata`).
+
 3c — Build the heavy source pool
 
   python benchmarks/build_heavy_token_dataset.py
@@ -265,6 +271,22 @@ With Condense already running on port 8090:
     --prime-proxy-cache-unique \
     --limit 5
 
+RUNTIME DOLLY RUN (NO PRE-CONVERSION FILE)
+
+Load Dolly from `save_to_disk()` data at runtime, emit a temporary benchmark JSONL, and run `run_paired.py`.
+
+  python benchmarks/run_paired_dolly_runtime.py -- \
+    --out-dir benchmarks/runs/dolly-runtime-minimal \
+    --preset-label "dolly runtime minimal" \
+    --baseline-url http://127.0.0.1:11434/v1/chat/completions \
+    --proxy-url http://127.0.0.1:8090/v1/chat/completions \
+    --baseline-model ollama/gemma3:4b \
+    --proxy-model ollama/gemma3:4b \
+    --prime-proxy-cache-unique \
+    --skip-quality
+
+By default this uses all Dolly rows (no `--limit`). Add wrapper `--limit N` only when you want a smaller smoke run.
+
 
 COMPARE TWO RUNS
 
@@ -273,6 +295,25 @@ COMPARE TWO RUNS
     --title "Custom comparison" \
     benchmarks/runs/profile-matrix/support_faq_high_repeat__cache_only \
     benchmarks/runs/profile-matrix/support_faq_high_repeat__full
+
+
+TWO-SERVICE A/B TEST (NO-OPT vs SEMANTIC-ONLY)
+
+Runs two Condense services at once:
+- no-opt service on `http://127.0.0.1:8091`
+- semantic-only service on `http://127.0.0.1:8090`
+
+Then benchmarks the same Dolly slice against both and writes one report.
+
+  .venv/bin/python benchmarks/run_condense_ab_test.py --limit 10
+
+Or from Makefile:
+
+  make benchmark-ab
+
+To enable parallel client calls (and benefit from higher Ollama server parallelism):
+
+  .venv/bin/python benchmarks/run_condense_ab_test.py --limit 10 --concurrency 4
 
 
 TROUBLESHOOTING

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import copy
 import hashlib
 import json
@@ -564,12 +565,12 @@ def _build_report(
         else None
     )
 
-    # ---- Tokens: totals, paired deltas, savings via cache hits ----
+    # ---- Tokens: input-only totals, paired deltas, savings ----
     token_pairs = [
-        (b_total, p_total, row)
+        (b_input, p_input, row)
         for row in rows
-        if (b_total := _valid_total_tokens(row["baseline"])) is not None
-        and (p_total := _valid_total_tokens(row["proxy"])) is not None
+        if (b_input := _token_field(row["baseline"], "prompt_tokens")) is not None
+        and (p_input := _token_field(row["proxy"], "prompt_tokens")) is not None
     ]
     paired_token_deltas = [pair[1] - pair[0] for pair in token_pairs]
 
@@ -594,7 +595,7 @@ def _build_report(
 
     proxy_input_billed = sum(_billed_proxy_tokens(row)[0] for row in rows)
     proxy_output_billed = sum(_billed_proxy_tokens(row)[1] for row in rows)
-    proxy_total_billed = proxy_input_billed + proxy_output_billed
+    proxy_total_billed = proxy_input_billed
 
     cache_hit_count = sum(1 for row in rows if _is_proxy_cache_hit(row))
     condense_savings_usd_total = round(
@@ -685,12 +686,10 @@ def _build_report(
     steady_baseline_output = sum(
         v for row in steady_rows if (v := _token_field(row["baseline"], "completion_tokens")) is not None
     )
-    steady_baseline_total = sum(
-        v for row in steady_rows if (v := _token_field(row["baseline"], "total_tokens")) is not None
-    )
+    steady_baseline_total = steady_baseline_input
     steady_proxy_input_billed = sum(_billed_proxy_tokens(row)[0] for row in steady_rows)
     steady_proxy_output_billed = sum(_billed_proxy_tokens(row)[1] for row in steady_rows)
-    steady_proxy_total_billed = steady_proxy_input_billed + steady_proxy_output_billed
+    steady_proxy_total_billed = steady_proxy_input_billed
     steady_cache_hits = sum(1 for row in steady_rows if _is_proxy_cache_hit(row))
     steady_baseline_cost = _cost(steady_baseline_input, steady_baseline_output)
     steady_proxy_cost = _cost(steady_proxy_input_billed, steady_proxy_output_billed)
@@ -755,26 +754,25 @@ def _build_report(
             "totals": {
                 "baseline_input_tokens": baseline_input_total,
                 "baseline_output_tokens": baseline_output_total,
-                "baseline_total_tokens": baseline_total_total,
+                "baseline_total_tokens": baseline_input_total,
                 "proxy_input_tokens": proxy_input_total,
                 "proxy_output_tokens": proxy_output_total,
-                "proxy_total_tokens": proxy_total_total,
+                "proxy_total_tokens": proxy_input_total,
                 "proxy_input_tokens_billed": proxy_input_billed,
                 "proxy_output_tokens_billed": proxy_output_billed,
-                "proxy_total_tokens_billed": proxy_total_billed,
+                "proxy_total_tokens_billed": proxy_input_billed,
                 "input_savings_pct": _percent_savings(baseline_input_total, proxy_input_total),
                 "output_savings_pct": _percent_savings(baseline_output_total, proxy_output_total),
                 # Keep headline savings non-negative to avoid reporting
                 # provider-tokenization noise as negative "savings" on no-hit runs.
-                "total_savings_pct": (
-                    max(0.0, billed)
-                    if (billed := _percent_savings(baseline_total_total, proxy_total_billed))
-                    is not None
-                    else None
+                "total_savings_pct": _percent_savings(
+                    baseline_input_total, proxy_input_billed
                 ),
-                "total_savings_pct_raw": _percent_savings(baseline_total_total, proxy_total_total),
+                "total_savings_pct_raw": _percent_savings(
+                    baseline_input_total, proxy_input_total
+                ),
                 "total_savings_pct_billed": _percent_savings(
-                    baseline_total_total, proxy_total_billed
+                    baseline_input_total, proxy_input_billed
                 ),
                 "output_savings_pct_billed": _percent_savings(
                     baseline_output_total, proxy_output_billed + prime_output_tokens
@@ -856,7 +854,7 @@ def _build_report(
             "baseline_total_tokens": steady_baseline_total,
             "proxy_input_tokens_billed": steady_proxy_input_billed,
             "proxy_output_tokens_billed": steady_proxy_output_billed,
-            "proxy_total_tokens_billed": steady_proxy_total_billed,
+                "proxy_total_tokens_billed": steady_proxy_input_billed,
             "token_total_savings_pct_billed": _percent_savings(
                 steady_baseline_total, steady_proxy_total_billed
             ),
@@ -1001,7 +999,7 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
             f"- Token total savings (billed): **{_fmt(steady.get('token_total_savings_pct_billed'), '%')}**"
         )
         lines.append(
-            f"- Output token savings (billed): **{_fmt(steady.get('output_savings_pct_billed'), '%')}**"
+            f"- Output token savings (billed, informational): **{_fmt(steady.get('output_savings_pct_billed'), '%')}**"
         )
         lines.append("")
     lines.append(
@@ -1024,7 +1022,7 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
     lines.append(f"| Cache hit rate | **{_fmt((cache.get('cache_hit_rate') or 0) * 100, '%')}** ({cache.get('cache_hit_count', 0)}/{cache.get('cache_observed_count', 0)}) |")
     lines.append(f"| Latency p50 speedup | **{_fmt(lat.get('p50_speedup_factor'), 'x')}** ({_fmt(lat.get('p50_savings_pct'), '%')} faster) |")
     lines.append(f"| Token total savings | **{_fmt(tok['totals'].get('total_savings_pct'), '%')}** |")
-    lines.append(f"| Output token savings (est., generation only) | **{_fmt(tok['generation_savings'].get('completion_tokens_savings_pct_est'), '%')}** |")
+    lines.append(f"| Output token savings (est., informational) | **{_fmt(tok['generation_savings'].get('completion_tokens_savings_pct_est'), '%')}** |")
     if cost.get("configured"):
         lines.append(f"| Cost saved | **${_fmt(cost.get('cost_savings_usd'))}** ({_fmt(cost.get('cost_savings_pct'), '%')}) |")
     lines.append(f"| Quality (baseline → proxy) | **{_fmt((qual.get('baseline_quality_pass_rate') or 0) * 100, '%')} → {_fmt((qual.get('proxy_quality_pass_rate') or 0) * 100, '%')}** |")
@@ -1064,8 +1062,8 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
     lines.append("|---|---:|---:|---:|")
     lines.append(f"| Input | {_fmt(totals.get('baseline_input_tokens'))} | {_fmt(totals.get('proxy_input_tokens'))} | {_fmt(totals.get('input_savings_pct'), '%')} |")
     lines.append(f"| Output | {_fmt(totals.get('baseline_output_tokens'))} | {_fmt(totals.get('proxy_output_tokens'))} | {_fmt(totals.get('output_savings_pct'), '%')} |")
-    lines.append(f"| Total | {_fmt(totals.get('baseline_total_tokens'))} | {_fmt(totals.get('proxy_total_tokens'))} | {_fmt(totals.get('total_savings_pct'), '%')} |")
-    lines.append(f"| Total (raw, unadjusted) | {_fmt(totals.get('baseline_total_tokens'))} | {_fmt(totals.get('proxy_total_tokens'))} | {_fmt(totals.get('total_savings_pct_raw'), '%')} |")
+    lines.append(f"| Total (input-only) | {_fmt(totals.get('baseline_total_tokens'))} | {_fmt(totals.get('proxy_total_tokens'))} | {_fmt(totals.get('total_savings_pct'), '%')} |")
+    lines.append(f"| Total (input-only, raw) | {_fmt(totals.get('baseline_total_tokens'))} | {_fmt(totals.get('proxy_total_tokens'))} | {_fmt(totals.get('total_savings_pct_raw'), '%')} |")
     lines.append("")
     lines.append("**Generation savings (cache effect, estimated):**")
     lines.append("")
@@ -1075,7 +1073,7 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
     lines.append(f"- **Estimated output-token savings (incl. priming):** **{_fmt(gen.get('completion_tokens_savings_pct_est'), '%')}**")
     lines.append("")
     lines.append(
-        f"**Paired (proxy − baseline) total tokens per case:** "
+        f"**Paired (proxy − baseline) input tokens per case:** "
         f"p50 {_fmt(pd.get('p50_proxy_minus_baseline'))}, "
         f"mean {_fmt(pd.get('mean_proxy_minus_baseline'))}, "
         f"min {_fmt(pd.get('min_proxy_minus_baseline'))}, "
@@ -1157,12 +1155,64 @@ def write_report_md(path: Path, report: dict[str, Any]) -> None:
     lines.append("---")
     lines.append("")
     lines.append("_Methodology: paired baseline (direct) vs Condense proxy on the same prompts. "
-                 "Token totals are the sum of OpenAI-compatible `usage` fields. Latency percentiles are computed "
+                 "Token totals and token-savings headlines are computed from input (`prompt_tokens`) only. "
+                 "Latency percentiles are computed "
                  "from per-request HTTP round-trip times. Output-token savings (est.) credits cache hits with avoiding "
                  "the baseline's completion tokens, then subtracts proxy generations on misses and any priming generations._")
     lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _run_case_once(
+    *,
+    case: dict[str, Any],
+    index: int,
+    args: argparse.Namespace,
+    retry_kw: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute one benchmark case and return a full results row."""
+    base_request = case["request"]
+    baseline_request = _apply_model(base_request, args.baseline_model)
+    proxy_request = _apply_model(base_request, args.proxy_model)
+
+    prime_record: dict[str, Any] = {"attempted": False}
+    with httpx.Client(timeout=args.timeout) as client:
+        if args.prime_proxy_cache:
+            prime = _post_json(client, args.proxy_url, proxy_request, args.authorization, **retry_kw)
+            prime_record = {
+                "attempted": True,
+                "skipped": False,
+                "fingerprint": _request_fingerprint(proxy_request),
+                "status_code": prime.get("status_code"),
+                "latency_ms": prime.get("latency_ms"),
+                "prompt_tokens": prime.get("prompt_tokens"),
+                "completion_tokens": prime.get("completion_tokens"),
+                "total_tokens": prime.get("total_tokens"),
+                "x_condense_headers": prime.get("x_condense_headers"),
+                "error": prime.get("error"),
+            }
+
+        baseline = _post_json(
+            client, args.baseline_url, baseline_request, args.authorization, **retry_kw
+        )
+        proxy = _post_json(client, args.proxy_url, proxy_request, args.authorization, **retry_kw)
+
+    return {
+        "id": case["id"],
+        "index": index,
+        "metadata": case["metadata"],
+        "reference": case["reference"],
+        "baseline_request": baseline_request,
+        "proxy_request": proxy_request,
+        "baseline": baseline,
+        "proxy": proxy,
+        "prime": prime_record,
+        "quality": {
+            "baseline": _quality_result(case["reference"], baseline["assistant_text"]),
+            "proxy": _quality_result(case["reference"], proxy["assistant_text"]),
+        },
+    }
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -1174,73 +1224,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, Any]] = []
 
-    prime_seen: set[str] = set()
     retry_kw = {
         "max_retries": int(getattr(args, "max_retries", 1) or 1),
         "retry_backoff_s": float(getattr(args, "retry_backoff_s", 1.0) or 1.0),
     }
     request_delay = float(getattr(args, "request_delay_s", 0.0) or 0.0)
+    concurrency = max(1, int(getattr(args, "concurrency", 1) or 1))
+    if concurrency > 1 and args.prime_proxy_cache_unique:
+        raise SystemExit(
+            "--prime-proxy-cache-unique is not supported with --concurrency > 1."
+        )
 
-    with httpx.Client(timeout=args.timeout) as client:
+    if concurrency == 1:
         for index, case in enumerate(cases, start=1):
-            base_request = case["request"]
-            baseline_request = _apply_model(base_request, args.baseline_model)
-            proxy_request = _apply_model(base_request, args.proxy_model)
-
-            prime_record: dict[str, Any] = {"attempted": False}
-            do_prime = args.prime_proxy_cache or args.prime_proxy_cache_unique
-            if do_prime:
-                fingerprint = _request_fingerprint(proxy_request)
-                skip_prime = args.prime_proxy_cache_unique and fingerprint in prime_seen
-                if skip_prime:
-                    prime_record = {
-                        "attempted": False,
-                        "skipped": True,
-                        "fingerprint": fingerprint,
-                    }
-                else:
-                    prime = _post_json(
-                        client, args.proxy_url, proxy_request, args.authorization, **retry_kw
-                    )
-                    prime_seen.add(fingerprint)
-                    prime_record = {
-                        "attempted": True,
-                        "skipped": False,
-                        "fingerprint": fingerprint,
-                        "status_code": prime.get("status_code"),
-                        "latency_ms": prime.get("latency_ms"),
-                        "prompt_tokens": prime.get("prompt_tokens"),
-                        "completion_tokens": prime.get("completion_tokens"),
-                        "total_tokens": prime.get("total_tokens"),
-                        "x_condense_headers": prime.get("x_condense_headers"),
-                        "error": prime.get("error"),
-                    }
-
-            baseline = _post_json(
-                client, args.baseline_url, baseline_request, args.authorization, **retry_kw
-            )
-            proxy = _post_json(client, args.proxy_url, proxy_request, args.authorization, **retry_kw)
-
-            results.append(
-                {
-                    "id": case["id"],
-                    "index": index,
-                    "metadata": case["metadata"],
-                    "reference": case["reference"],
-                    "baseline_request": baseline_request,
-                    "proxy_request": proxy_request,
-                    "baseline": baseline,
-                    "proxy": proxy,
-                    "prime": prime_record,
-                    "quality": {
-                        "baseline": _quality_result(case["reference"], baseline["assistant_text"]),
-                        "proxy": _quality_result(case["reference"], proxy["assistant_text"]),
-                    },
-                }
-            )
+            row = _run_case_once(case=case, index=index, args=args, retry_kw=retry_kw)
+            results.append(row)
+            proxy = row["proxy"]
             print(
                 f"[{index}/{len(cases)}] {case['id']} "
-                f"baseline={baseline['status_code']} proxy={proxy['status_code']} "
+                f"baseline={row['baseline']['status_code']} proxy={proxy['status_code']} "
                 f"proxy_cache={proxy['x_condense_headers'].get('x-condense-cache-hit', 'n/a')}",
                 flush=True,
             )
@@ -1252,6 +1254,39 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             if request_delay > 0 and index < len(cases):
                 time.sleep(request_delay)
+    else:
+        rows_by_index: dict[int, dict[str, Any]] = {}
+        completed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            future_to_case = {
+                executor.submit(
+                    _run_case_once,
+                    case=case,
+                    index=index,
+                    args=args,
+                    retry_kw=retry_kw,
+                ): (index, case)
+                for index, case in enumerate(cases, start=1)
+            }
+            for future in concurrent.futures.as_completed(future_to_case):
+                index, case = future_to_case[future]
+                row = future.result()
+                rows_by_index[index] = row
+                completed += 1
+                proxy = row["proxy"]
+                print(
+                    f"[{completed}/{len(cases)}] {case['id']} "
+                    f"baseline={row['baseline']['status_code']} proxy={proxy['status_code']} "
+                    f"proxy_cache={proxy['x_condense_headers'].get('x-condense-cache-hit', 'n/a')}",
+                    flush=True,
+                )
+                _write_progress(
+                    args.out_dir / "progress.json",
+                    completed=completed,
+                    total=len(cases),
+                    case_id=str(case["id"]),
+                )
+        results = [rows_by_index[i] for i in sorted(rows_by_index.keys())]
 
     completed_at = datetime.now(UTC).isoformat()
     report = _build_report(results, args, started_at, completed_at)
@@ -1348,6 +1383,12 @@ def main() -> None:
         type=float,
         default=0.0,
         help="Pause between benchmark cases to reduce rate-limit/DNS pressure.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Number of benchmark cases to execute concurrently (default: 1).",
     )
     args = parser.parse_args()
     if args.prime_proxy_cache and args.prime_proxy_cache_unique:

@@ -1,4 +1,4 @@
-.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint clean
+.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint benchmark-ab clean
 
 install:
 	poetry install
@@ -78,6 +78,9 @@ benchmark-data:
 
 benchmark-lint:
 	poetry run ruff check benchmarks/
+
+benchmark-ab:
+	.venv/bin/python benchmarks/run_condense_ab_test.py --limit 10
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
