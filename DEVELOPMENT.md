@@ -20,6 +20,10 @@ Use the standardized local commands:
 make start-local
 ```
 
+`make start-local` now bootstraps the mandatory local Postgres dependency via
+Docker (`condense-postgres-local`) and persists data under
+`./.docker/postgres-data` before launching Condense.
+
 Build modular UI assets (for `/_ui`) when needed:
 
 ```bash
@@ -40,6 +44,12 @@ Health checks:
 curl http://127.0.0.1:8090/health
 curl http://127.0.0.1:8090/health/ready
 curl http://127.0.0.1:8090/metrics/summary/v2
+```
+
+Optional DB check:
+
+```bash
+docker exec condense-postgres-local pg_isready -U condense -d condense
 ```
 
 Stop local server:

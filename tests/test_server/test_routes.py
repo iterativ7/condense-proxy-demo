@@ -523,9 +523,19 @@ deployment:
         assert resp.status_code == 200
         data = resp.json()
         assert "overall" in data
+        assert "window" in data
         assert "enabled_tabs" in data
         assert "optimizations" in data
+        assert "series" in data
+        assert "optimization_series" in data
         assert "cache" in data["enabled_tabs"]
+
+    def test_metrics_summary_v2_window_selector(self, client):
+        """V2 summary accepts a time window selector."""
+        resp = client.get("/metrics/summary/v2?window=24h")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["window"] == "24h"
 
     def test_metrics_summary_v2_optimization_totals(self, client, monkeypatch):
         """V2 summary aggregates per-optimization updates."""
@@ -564,3 +574,62 @@ deployment:
         assert resp.status_code in {200, 503}
         if resp.status_code == 503:
             assert "UI build not found" in resp.text
+
+    def test_metrics_summary_persists_across_restart(self, tmp_path, monkeypatch):
+        """SQL-backed summary totals survive app restarts."""
+        reset_config_cache()
+        config_file = tmp_path / "condense.yaml"
+        config_file.write_text(f"""
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "cache"
+    type: "cache"
+    enabled: true
+    config:
+      exact:
+        backend: "memory"
+        max_size: 100
+        ttl_seconds: 60
+      non_deterministic: "skip"
+deployment:
+  port: 8080
+metrics:
+  endpoint: "/metrics"
+  postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
+""")
+        response_data = {
+            "id": "chatcmpl-persist-1",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "persist me"}, "index": 0, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 3, "total_tokens": 12},
+        }
+
+        async def fake_acompletion(**kwargs):
+            return response_data
+
+        monkeypatch.setattr(
+            "condense.pipeline.steps.forward_step.litellm.acompletion",
+            fake_acompletion,
+        )
+
+        app_one = create_app(str(config_file))
+        with TestClient(app_one) as first_client:
+            resp = first_client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": "Persist this request"}],
+                    "temperature": 0,
+                },
+            )
+            assert resp.status_code == 200
+
+        app_two = create_app(str(config_file))
+        with TestClient(app_two) as second_client:
+            summary = second_client.get("/metrics/summary").json()
+            assert summary["totals"]["total_requests"] == 1
+            assert summary["totals"]["total_prompt_tokens"] == 9
+            assert summary["totals"]["total_completion_tokens"] == 3
+            assert summary["totals"]["total_tokens"] == 12

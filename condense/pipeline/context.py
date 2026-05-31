@@ -23,7 +23,7 @@ class RequestMetrics:
     optimization_updates: list[dict[str, Any]] = field(default_factory=list)
 
     def as_record_kwargs(self) -> dict[str, Any]:
-        """Return kwargs shape expected by MetricsTracker.record_request()."""
+        """Return kwargs shape expected by metrics store record_request()."""
         return {
             "cache_hit": self.cache_hit,
             "savings_usd": self.savings_usd,

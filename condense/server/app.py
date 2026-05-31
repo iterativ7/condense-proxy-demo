@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from condense import __version__
 from condense.cache.memory import InMemoryCache
 from condense.config.loader import load_config
-from condense.metrics.tracker import MetricsTracker
+from condense.metrics.postgres_store import PostgresMetricsStore
 from condense.server.middleware import TimingMiddleware, RequestLoggingMiddleware
 from condense.server.routes import router
 from condense.session.store import SessionStore
@@ -109,8 +109,8 @@ def create_app(config_path: str = None) -> FastAPI:
             follow_redirects=True,
         )
 
-        # Metrics tracker
-        app.state.metrics = MetricsTracker()
+        app.state.metrics_store = PostgresMetricsStore(config.metrics.postgres_dsn)
+        logger.info("Using Postgres metrics store")
 
         # Circuit breaker
         app.state.circuit_breaker = CircuitBreaker(
@@ -128,6 +128,12 @@ def create_app(config_path: str = None) -> FastAPI:
         if cache_backend is not None and hasattr(cache_backend, "_redis"):
             try:
                 await cache_backend._redis.aclose()
+            except Exception:
+                pass
+        metrics_store = getattr(app.state, "metrics_store", None)
+        if metrics_store is not None:
+            try:
+                metrics_store.close()
             except Exception:
                 pass
 

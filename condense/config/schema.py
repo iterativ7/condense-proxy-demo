@@ -162,8 +162,8 @@ class RedisConfig(BaseModel):
 
 
 class MetricsConfig(BaseModel):
-    enabled: bool = True
     endpoint: str = "/metrics"
+    postgres_dsn: str = "postgresql://condense:condense@localhost:5432/condense"
 
 
 class HeadersConfig(BaseModel):

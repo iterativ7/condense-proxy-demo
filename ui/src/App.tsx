@@ -17,8 +17,24 @@ type SummaryResponse = {
     total_requests: number;
     uptime_seconds: number;
   };
+  window: "24h" | "7d" | "30d" | "all_time";
   enabled_tabs: string[];
   optimizations: OptimizationSummary[];
+  series: Array<{
+    bucket: string;
+    total_requests: number;
+    total_savings_usd: number;
+    total_tokens_saved_estimate: number;
+  }>;
+  optimization_series: Array<{
+    optimization_id: string;
+    points: Array<{
+      bucket: string;
+      events: number;
+      total_savings_usd: number;
+      total_tokens_saved: number;
+    }>;
+  }>;
 };
 
 const EMPTY_SUMMARY: SummaryResponse = {
@@ -28,8 +44,11 @@ const EMPTY_SUMMARY: SummaryResponse = {
     total_requests: 0,
     uptime_seconds: 0,
   },
+  window: "7d",
   enabled_tabs: [],
   optimizations: [],
+  series: [],
+  optimization_series: [],
 };
 
 function formatUsd(value: number): string {
@@ -42,6 +61,7 @@ function formatInt(value: number): string {
 
 export function App() {
   const [summary, setSummary] = useState<SummaryResponse>(EMPTY_SUMMARY);
+  const [window, setWindow] = useState<SummaryResponse["window"]>("7d");
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("Loading...");
 
@@ -50,7 +70,7 @@ export function App() {
 
     async function loadSummary() {
       try {
-        const response = await fetch("/metrics/summary/v2", { cache: "no-store" });
+        const response = await fetch(`/metrics/summary/v2?window=${window}`, { cache: "no-store" });
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
@@ -84,13 +104,15 @@ export function App() {
       mounted = false;
       clearInterval(timer);
     };
-  }, [activeTab]);
+  }, [activeTab, window]);
 
   const optimizationMap = useMemo(() => {
     return new Map(summary.optimizations.map((entry) => [entry.optimization_id, entry]));
   }, [summary.optimizations]);
 
   const selected = activeTab ? optimizationMap.get(activeTab) : undefined;
+  const selectedSeries = summary.optimization_series.find((entry) => entry.optimization_id === activeTab);
+  const latestOverallPoint = summary.series[summary.series.length - 1];
 
   return (
     <main className="container">
@@ -117,6 +139,36 @@ export function App() {
         <article className="card">
           <span className="label">Uptime (seconds)</span>
           <span className="value">{formatInt(summary.overall.uptime_seconds)}</span>
+        </article>
+      </section>
+
+      <section className="window-section">
+        <h2>Time Window</h2>
+        <div className="tabs">
+          {(["24h", "7d", "30d", "all_time"] as const).map((option) => (
+            <button
+              key={option}
+              className={option === window ? "tab tab-active" : "tab"}
+              onClick={() => setWindow(option)}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="overview-grid">
+        <article className="card">
+          <span className="label">Trend Buckets ({window})</span>
+          <span className="value">{formatInt(summary.series.length)}</span>
+        </article>
+        <article className="card">
+          <span className="label">Latest Bucket Savings</span>
+          <span className="value value-good">{formatUsd(latestOverallPoint?.total_savings_usd ?? 0)}</span>
+        </article>
+        <article className="card">
+          <span className="label">Latest Bucket Requests</span>
+          <span className="value">{formatInt(latestOverallPoint?.total_requests ?? 0)}</span>
         </article>
       </section>
 
@@ -168,6 +220,10 @@ export function App() {
             <details>
               <summary>Last Details Payload</summary>
               <pre>{JSON.stringify(selected.last_details, null, 2)}</pre>
+            </details>
+            <details>
+              <summary>Historical Series ({window})</summary>
+              <pre>{JSON.stringify(selectedSeries?.points ?? [], null, 2)}</pre>
             </details>
           </article>
         ) : (

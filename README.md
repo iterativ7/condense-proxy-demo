@@ -72,6 +72,10 @@ upstream:
 deployment:
   streaming_enabled: true
 
+metrics:
+  endpoint: "/metrics"
+  postgres_dsn: "postgresql://condense:condense@localhost:5432/condense"
+
 optimizations:
   - id: "exact_cache"
     type: "cache"
@@ -123,6 +127,7 @@ Resource startup is optimization-aware:
 - cache backend initializes only when `cache` optimization is enabled
 - session store initializes only when `budget` optimization is enabled
 - pipeline construction enforces required resources for enabled optimization types
+- Postgres metrics storage is mandatory and initialized at startup
 
 ## LiteLLM SDK Forwarding
 
@@ -345,8 +350,11 @@ Savings and dashboard endpoints:
   - UI-focused payload for modular savings UI.
   - Includes:
     - `overall` consolidated savings values
+    - `window` selected aggregation window (`24h`, `7d`, `30d`, `all_time`)
     - `enabled_tabs` from enabled optimizations
     - `optimizations[]` per-optimization contributions/details
+    - `series[]` bucketed totals for trend visualization
+    - `optimization_series[]` bucketed per-optimization history
 - `GET /_ui`:
   - Separate modular UI module (when built assets are present).
   - Use `make ui-build` before loading locally.
@@ -371,6 +379,11 @@ docker compose up -d --build
 ```
 
 The Docker healthcheck now uses Python stdlib (no curl dependency required in image).
+By default, `docker-compose.yml` loads `condense.default.yaml` (override with
+`CONDENSE_DOCKER_CONFIG`, for example `condense.local.yaml`) and persists
+Postgres state into `./.docker/postgres-data` via bind mount. That directory survives
+`docker compose down` and `docker compose down -v`; data is removed only if files are
+explicitly deleted from disk.
 
 ## Tests
 

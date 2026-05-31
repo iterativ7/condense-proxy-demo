@@ -109,8 +109,8 @@ redis:
   url: "redis://localhost:6379"
 
 metrics:
-  enabled: true
   endpoint: "/metrics"
+  postgres_dsn: "postgresql://condense:condense@postgres:5432/condense"
 
 headers:
   add_savings_headers: true

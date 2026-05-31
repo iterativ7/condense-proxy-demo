@@ -193,6 +193,92 @@ deployment:
             assert len(calls) == 1  # no additional forward call
 
 
+def test_e2e_cache_token_savings_surface_in_dashboard_payload(tmp_path, monkeypatch):
+    """Cache hit token savings should be reflected in the UI summary payload."""
+    client = _make_client(
+        tmp_path,
+        """
+upstream:
+  url: "https://api.openai.com/v1"
+  timeout_seconds: 30
+optimizations:
+  - id: "cache"
+    type: "cache"
+    enabled: true
+    config:
+      exact:
+        backend: "memory"
+        max_size: 100
+        ttl_seconds: 120
+      non_deterministic: "skip"
+  - id: "routing"
+    type: "routing"
+    enabled: false
+    config:
+      rules: []
+  - id: "budget"
+    type: "budget"
+    enabled: false
+    config: {}
+deployment:
+  port: 8080
+""",
+    )
+
+    response_data = {
+        "id": "chatcmpl-e2e-cache-ui-1",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Cached dashboard response"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+    async def fake_acompletion(**kwargs):
+        return response_data
+
+    monkeypatch.setattr(
+        "condense.pipeline.steps.forward_step.litellm.acompletion",
+        fake_acompletion,
+    )
+
+    request_body = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Cache token savings into UI"}],
+        "temperature": 0,
+    }
+
+    with client:
+        warm = client.post("/v1/chat/completions", json=request_body)
+        assert warm.status_code == 200
+        cached = client.post("/v1/chat/completions", json=request_body)
+        assert cached.status_code == 200
+        assert cached.headers.get("x-condense-cache-hit") == "true"
+
+        summary = client.get("/metrics/summary/v2?window=all_time")
+        assert summary.status_code == 200
+        payload = summary.json()
+
+        # These are the exact fields the modular UI reads and displays.
+        assert payload["overall"]["total_tokens_saved_estimate"] == 15
+        assert payload["overall"]["total_requests"] == 2
+        assert payload["window"] == "all_time"
+        assert "series" in payload
+        assert "optimization_series" in payload
+
+        cache_entry = next(
+            (entry for entry in payload["optimizations"] if entry["optimization_id"] == "cache"),
+            None,
+        )
+        assert cache_entry is not None
+        assert cache_entry["total_tokens_saved"] == 15
+        assert cache_entry["events"] >= 2
+
+
 def test_e2e_model_routing_fallback_to_rules(tmp_path, monkeypatch):
     """When model routing returns None, rule-based routing serves as fallback."""
     from unittest.mock import MagicMock, patch

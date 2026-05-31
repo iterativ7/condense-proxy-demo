@@ -47,6 +47,10 @@ h2 {
   gap: 12px;
 }
 
+.window-section {
+  margin-top: 20px;
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--line);

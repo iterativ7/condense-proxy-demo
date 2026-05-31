@@ -7,14 +7,33 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./condense.yaml:/app/condense.yaml:ro
+      - ./${CONDENSE_DOCKER_CONFIG:-condense.default.yaml}:/app/condense.yaml:ro
     environment:
       - CONDENSE_CONFIG=/app/condense.yaml
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=condense
+      - POSTGRES_USER=condense
+      - POSTGRES_PASSWORD=condense
+    volumes:
+      - ./.docker/postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U condense -d condense"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
