@@ -39,6 +39,21 @@ optimizations:
       deepseek:
         enabled: true
 
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    depends_on: ["cache"]
+    config:
+      # Compression chain: RTK on tool output, then fusion on natural language.
+      # RTK requires: pip install condense[rtk]
+      # Fusion requires: pip install condense[compression]
+      # If either is unavailable, it is skipped gracefully.
+      chain:
+        - backend: "rtk"
+          apply_to: ["tool"]
+        - backend: "fusion"
+          apply_to: ["user", "system"]
+
   - id: "routing"
     type: "routing"
     enabled: false

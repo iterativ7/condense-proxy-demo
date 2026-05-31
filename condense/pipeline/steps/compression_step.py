@@ -20,24 +20,38 @@ _compressor_cache: dict[str, Compressor] = {}
 
 
 def _get_or_create_compressor(config: dict) -> Compressor:
-    """Return a cached Compressor for the given config."""
+    """Return a cached Compressor for the given config.
+
+    Supports two modes:
+    - Single backend: ``compressor_type: "fusion"``
+    - Chain: ``chain: [{backend: "rtk", apply_to: ["tool"]}, ...]``
+    """
+    chain_config = config.get("chain")
     compressor_type = config.get("compressor_type", "fusion")
 
     # Build a cache key from the config
-    cache_parts = [compressor_type]
-    for sub_key in ("fusion", "llmlingua"):
-        sub = config.get(sub_key, {})
-        if sub:
-            cache_parts.append(f"{sub_key}:{sorted(sub.items())}")
-    cache_key = "|".join(cache_parts)
+    if chain_config:
+        # Chain mode — key from the full chain definition
+        import json
+        cache_key = f"chain:{json.dumps(chain_config, sort_keys=True)}"
+    else:
+        cache_parts = [compressor_type]
+        for sub_key in ("fusion", "llmlingua", "rtk"):
+            sub = config.get(sub_key, {})
+            if sub:
+                cache_parts.append(f"{sub_key}:{sorted(sub.items())}")
+        cache_key = "|".join(cache_parts)
 
     if cache_key not in _compressor_cache:
-        # Extract backend-specific kwargs
-        backend_kwargs = config.get(compressor_type, {})
-        _compressor_cache[cache_key] = Compressor(
-            compressor_type=compressor_type,
-            **backend_kwargs,
-        )
+        if chain_config:
+            _compressor_cache[cache_key] = Compressor(chain=chain_config)
+        else:
+            # Extract backend-specific kwargs
+            backend_kwargs = config.get(compressor_type, {})
+            _compressor_cache[cache_key] = Compressor(
+                compressor_type=compressor_type,
+                **backend_kwargs,
+            )
     return _compressor_cache[cache_key]
 
 

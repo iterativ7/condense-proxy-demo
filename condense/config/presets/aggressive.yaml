@@ -37,6 +37,19 @@ optimizations:
       deepseek:
         enabled: true
 
+  - id: "compression"
+    type: "compression"
+    enabled: true
+    depends_on: ["cache"]
+    config:
+      # Maximum compression: RTK for tool output + fusion for everything else.
+      # pip install condense[rtk,compression]
+      chain:
+        - backend: "rtk"
+          apply_to: ["tool"]
+        - backend: "fusion"
+          apply_to: ["user", "system"]
+
   - id: "routing"
     type: "routing"
     enabled: true
