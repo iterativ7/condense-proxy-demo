@@ -9,12 +9,15 @@ class UpstreamConfig(BaseModel):
     url: str = "https://api.openai.com/v1"
     timeout_seconds: int = 300
     api_key_env: Optional[str] = None
+    # Stream adapter name used by Condense (`openai_chat_sse` by default).
+    stream_protocol: str = "openai_chat_sse"
 
 
 class DeploymentConfig(BaseModel):
     mode: str = "behind-gateway"  # "behind-gateway" | "standalone"
     host: str = "0.0.0.0"
     port: int = 8080
+    streaming_enabled: bool = True
 
 
 class ExactCacheConfig(BaseModel):
@@ -114,6 +117,25 @@ class RoutingConfig(BaseModel):
     enabled: bool = False
     rules: list[RoutingRule] = Field(default_factory=list)
     model_routing: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
+
+
+class FusionCompressionConfig(BaseModel):
+    aggressive: bool = True
+    enable_rewind: bool = False
+
+
+class LLMLinguaCompressionConfig(BaseModel):
+    model_name: str = "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
+    rate: float = 0.5
+    use_llmlingua2: bool = True
+    device: str = "cpu"
+
+
+class CompressionConfig(BaseModel):
+    enabled: bool = False
+    compressor_type: str = "fusion"
+    fusion: FusionCompressionConfig = Field(default_factory=FusionCompressionConfig)
+    llmlingua: LLMLinguaCompressionConfig = Field(default_factory=LLMLinguaCompressionConfig)
 
 
 class BudgetConfig(BaseModel):

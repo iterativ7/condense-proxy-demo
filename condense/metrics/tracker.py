@@ -21,6 +21,8 @@ class MetricsSnapshot:
     requests_rejected: int = 0
     pipeline_errors: int = 0
     uptime_seconds: float = 0.0
+    avg_ttfb_ms: float = 0.0
+    avg_stream_duration_ms: float = 0.0
     optimization_totals: dict[str, dict] = field(default_factory=dict)
 
 
@@ -43,6 +45,8 @@ class MetricsTracker:
         self._requests_rejected = 0
         self._pipeline_errors = 0
         self._latencies: list[float] = []
+        self._ttfb_samples: list[float] = []
+        self._stream_durations: list[float] = []
         self._optimization_totals: dict[str, dict] = {}
 
     def record_request(
@@ -57,6 +61,8 @@ class MetricsTracker:
         routed: bool = False,
         rejected: bool = False,
         latency_ms: float = 0.0,
+        ttfb_ms: float = 0.0,
+        stream_duration_ms: float = 0.0,
         optimization_updates: list[dict] | None = None,
     ) -> None:
         """Record metrics for a single request."""
@@ -81,6 +87,14 @@ class MetricsTracker:
                 # Keep only last 1000 latencies
                 if len(self._latencies) > 1000:
                     self._latencies = self._latencies[-1000:]
+            if ttfb_ms > 0:
+                self._ttfb_samples.append(ttfb_ms)
+                if len(self._ttfb_samples) > 1000:
+                    self._ttfb_samples = self._ttfb_samples[-1000:]
+            if stream_duration_ms > 0:
+                self._stream_durations.append(stream_duration_ms)
+                if len(self._stream_durations) > 1000:
+                    self._stream_durations = self._stream_durations[-1000:]
             if optimization_updates:
                 for update in optimization_updates:
                     optimization_id = str(update.get("optimization_id") or "unknown")
@@ -127,6 +141,16 @@ class MetricsTracker:
                 requests_rejected=self._requests_rejected,
                 pipeline_errors=self._pipeline_errors,
                 uptime_seconds=time.time() - self._start_time,
+                avg_ttfb_ms=(
+                    sum(self._ttfb_samples) / len(self._ttfb_samples)
+                    if self._ttfb_samples
+                    else 0.0
+                ),
+                avg_stream_duration_ms=(
+                    sum(self._stream_durations) / len(self._stream_durations)
+                    if self._stream_durations
+                    else 0.0
+                ),
                 optimization_totals={
                     key: value.copy() for key, value in self._optimization_totals.items()
                 },

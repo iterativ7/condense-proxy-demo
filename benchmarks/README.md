@@ -23,7 +23,7 @@ WHAT IS IN benchmarks/
     datasets/
       converted/              JSONL cases (in git)
       llm_benchmarks/         raw downloads (not in git)
-    presets/                  minimal, cache_only, full
+    presets/                  baseline + feature modes
     runs/                     outputs (not in git)
 
 
@@ -131,7 +131,7 @@ Or run the whole data pipeline:
 
 Step 4 — Presets (benchmarks/presets/)
 
-The matrix tests three Condense modes. Each run starts Condense with one YAML file, then runs run_paired.py.
+The matrix supports baseline modes and new feature modes. Each run starts Condense with one YAML file, then runs run_paired.py.
 
   gemini_minimal.yaml      mode: minimal
     Passthrough only. No Condense cache. Use as a baseline for overhead.
@@ -142,6 +142,15 @@ The matrix tests three Condense modes. Each run starts Condense with one YAML fi
   gemini_full.yaml         mode: full
     Cache, provider cache, routing, and budget.
 
+  gemini_full_compression.yaml         mode: full_compression
+    Full mode + compression step.
+
+  gemini_full_ml_routing.yaml          mode: full_ml_routing
+    Full mode + ML routing (`model_routing`).
+
+  gemini_full_compression_ml_routing.yaml  mode: full_compression_ml_routing
+    Full mode + compression + ML routing.
+
 All presets use Gemini upstream and listen on 127.0.0.1:8090.
 
 More detail: benchmarks/presets/README.md
@@ -150,37 +159,55 @@ Step 5 — Smoke test
 
 One mode, four rows, about two minutes:
 
-  python benchmarks/run_gemini_profile_matrix.py --limit 4 --modes cache_only
+  python benchmarks/run_gemini_profile_matrix.py --limit 4 --modes cache_only full_compression
 
 Output goes under benchmarks/runs/profile-matrix/.
 
 Step 6 — Full matrix
 
-Nine runs: three profiles times three modes. Plan for roughly 30 to 90+ minutes depending on network and API speed.
+Recommended production rerun order:
 
-  python benchmarks/run_gemini_profile_matrix.py
+  1) Baseline rerun (3 modes): minimal, cache_only, full
+  2) Extended rerun (new features): full_compression, full_ml_routing, full_compression_ml_routing
 
-Or:
+Baseline rerun command:
 
-  make benchmark-run
+  python benchmarks/run_gemini_profile_matrix.py \
+    --modes minimal cache_only full \
+    --out-root benchmarks/runs/profile-matrix-v2-baseline
+
+Extended rerun command:
+
+  python benchmarks/run_gemini_profile_matrix.py \
+    --modes full_compression full_ml_routing full_compression_ml_routing \
+    --out-root benchmarks/runs/profile-matrix-v2-extended
+
+Each matrix is three profiles times selected modes. Plan for roughly 30 to 90+ minutes per matrix depending on network and API speed.
 
 The runner reads profile_manifest.json, applies each preset, primes each unique prompt once, and retries transient failures with a short delay between cases.
 
 Step 7 — Summarize
 
-  python benchmarks/summarize_profile_matrix.py
+Baseline summary:
 
-Or:
+  python benchmarks/summarize_profile_matrix.py \
+    --runs-root benchmarks/runs/profile-matrix-v2-baseline \
+    --output benchmarks/runs/profile-matrix-v2-baseline/SUMMARY.md \
+    --title "Production benchmark v2 baseline modes"
 
-  make benchmark-summary
+Extended summary:
 
-Creates benchmarks/runs/profile-matrix/SUMMARY.md
+  python benchmarks/summarize_profile_matrix.py \
+    --runs-root benchmarks/runs/profile-matrix-v2-extended \
+    --output benchmarks/runs/profile-matrix-v2-extended/SUMMARY.md \
+    --title "Production benchmark v2 feature modes"
 
 Step 8 — Read results (benchmarks/runs/)
 
 Run folders are not committed. After Step 7, open:
 
-  benchmarks/runs/profile-matrix/SUMMARY.md
+  benchmarks/runs/profile-matrix-v2-baseline/SUMMARY.md
+  benchmarks/runs/profile-matrix-v2-extended/SUMMARY.md
 
 Each cell is a folder named profile__mode, for example:
 
@@ -240,6 +267,9 @@ ROOT SCRIPTS (benchmarks/)
   compare_runs.py
     Compare any two or more run directories.
 
+  compare_matrix_summary.py
+    Compare steady-state metrics between two matrix run roots (v2 baseline vs extended).
+
   recompute_report.py
     Rebuild REPORT.md from results.jsonl.
 
@@ -252,6 +282,23 @@ MAKE TARGETS
   make benchmark            build, run, and summarize
   make benchmark-data       full dataset pipeline (Steps 3a–3d)
   make benchmark-lint       ruff on benchmarks/
+
+Production v2 rerun (post-merge codebase):
+
+  make benchmark-v2-baseline   Step 6 baseline matrix only
+  make benchmark-v2-extended   Step 6 extended feature matrix only
+  make benchmark-v2-summary    Step 7 for both roots
+  make benchmark-v2-compare    baseline vs extended steady-state table
+  make benchmark-v2            all of the above in order
+
+Compare baseline vs extended (after both matrices finish):
+
+  python benchmarks/compare_matrix_summary.py \
+    --left-root benchmarks/runs/profile-matrix-v2-baseline \
+    --right-root benchmarks/runs/profile-matrix-v2-extended \
+    --left-label baseline_v2 \
+    --right-label extended_v2 \
+    --output benchmarks/runs/profile-matrix-v2-COMPARISON.md
 
 
 MANUAL SINGLE RUN

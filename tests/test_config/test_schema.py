@@ -11,6 +11,7 @@ class TestCondenseConfig:
         config = CondenseConfig()
         assert config.upstream.url == "https://api.openai.com/v1"
         assert config.deployment.port == 8080
+        assert config.deployment.streaming_enabled is True
         assert config.optimizations == []
         assert config.failsafe.on_error == "passthrough"
 

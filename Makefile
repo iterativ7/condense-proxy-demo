@@ -1,4 +1,4 @@
-.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint clean
+.PHONY: install venv-setup ui-install ui-build start-local stop-local test lint format run docker-build docker-up docker-down docker-prep-integration benchmark benchmark-build benchmark-run benchmark-summary benchmark-data benchmark-lint benchmark-v2-baseline benchmark-v2-extended benchmark-v2-summary benchmark-v2-compare benchmark-v2 clean
 
 install:
 	poetry install
@@ -78,6 +78,21 @@ benchmark-data:
 
 benchmark-lint:
 	poetry run ruff check benchmarks/
+
+benchmark-v2-baseline:
+	python benchmarks/run_gemini_profile_matrix.py --modes minimal cache_only full --out-root benchmarks/runs/profile-matrix-v2-baseline
+
+benchmark-v2-extended:
+	python benchmarks/run_gemini_profile_matrix.py --modes full_compression full_ml_routing full_compression_ml_routing --out-root benchmarks/runs/profile-matrix-v2-extended
+
+benchmark-v2-summary:
+	python benchmarks/summarize_profile_matrix.py --runs-root benchmarks/runs/profile-matrix-v2-baseline --output benchmarks/runs/profile-matrix-v2-baseline/SUMMARY.md --title "Production benchmark v2 baseline modes"
+	python benchmarks/summarize_profile_matrix.py --runs-root benchmarks/runs/profile-matrix-v2-extended --output benchmarks/runs/profile-matrix-v2-extended/SUMMARY.md --title "Production benchmark v2 feature modes"
+
+benchmark-v2-compare:
+	python benchmarks/compare_matrix_summary.py --left-root benchmarks/runs/profile-matrix-v2-baseline --right-root benchmarks/runs/profile-matrix-v2-extended --left-label baseline_v2 --right-label extended_v2 --output benchmarks/runs/profile-matrix-v2-COMPARISON.md
+
+benchmark-v2: benchmark-v2-baseline benchmark-v2-extended benchmark-v2-summary benchmark-v2-compare
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

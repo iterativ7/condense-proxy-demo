@@ -15,6 +15,7 @@ App -> Gateway -> Condense Proxy -> Model Provider
 - Rule-based model routing
 - Session budget enforcement
 - Request/latency/savings metrics
+- Real-time SSE streaming (`stream: true`) with cache replay
 - `X-Condense-*` response headers for transparency
 
 ## Key Architecture (Current)
@@ -65,7 +66,11 @@ If you specifically want to run with `condense.default.yaml`, use `--config cond
 upstream:
   url: "https://api.openai.com/v1"
   timeout_seconds: 300
+  stream_protocol: "openai_chat_sse"  # default; see Streaming section
   # api_key_env: "OPENAI_API_KEY"
+
+deployment:
+  streaming_enabled: true
 
 optimizations:
   - id: "exact_cache"
@@ -228,6 +233,100 @@ Common error responses:
   - `{"error":{"message":"...","type":"condense_error"}}`
 - `502` upstream proxy failure (failsafe path):
   - `{"error":{"message":"...","type":"proxy_error"}}`
+
+## Streaming
+
+Condense supports OpenAI-compatible SSE streaming on `POST /v1/chat/completions`.
+Send `"stream": true` and the proxy returns `Content-Type: text/event-stream`
+with `data: {...}` chunks and a final `data: [DONE]`.
+
+Streaming flow:
+
+1. Pre-forward pipeline runs first (cache, budget, compression, etc.).
+2. **Cache miss** → live upstream stream via `StreamForwarder` (`litellm.acompletion(stream=True)`).
+3. **Cache hit** → cached completion replayed as SSE chunks.
+4. After stream completes, response is stored in cache (on successful miss path).
+
+### Quick stream test (curl)
+
+```bash
+curl -N http://127.0.0.1:8090/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"gemini/gemini-2.5-flash",
+    "messages":[{"role":"user","content":"Say hello in one sentence."}],
+    "stream": true,
+    "temperature": 0
+  }'
+```
+
+Use `-N` so curl prints chunks as they arrive.
+
+### Interactive demo (word-by-word + proof lines)
+
+```bash
+python scripts/stream_demo.py --slow --temperature 0 \
+  --prompt "Explain caching in 4 short sentences."
+```
+
+Run the same command twice to verify cache replay streaming:
+
+- first run: `X-Condense-Cache-Hit: false`, `X-Condense-Stream-Mode: live_upstream`
+- second run: `X-Condense-Cache-Hit: true`, `X-Condense-Stream-Mode: cache_replay`
+
+Use dataset rows:
+
+```bash
+python scripts/stream_demo.py --slow --case-index 1
+```
+
+### Stream config flags
+
+In `condense.yaml`:
+
+```yaml
+deployment:
+  streaming_enabled: true   # set false to force JSON responses even when stream=true
+
+upstream:
+  stream_protocol: "openai_chat_sse"   # default adapter for OpenAI-style SSE chunks
+```
+
+Per-request override:
+
+```json
+{
+  "stream": true,
+  "stream_protocol": "openai_chat_sse"
+}
+```
+
+Unknown protocol names fall back to `generic_json_sse`.
+
+### Extensible stream protocols
+
+Streaming uses pluggable adapters in `condense/server/stream_protocols.py`:
+
+- `openai_chat_sse` — default OpenAI chat chunk format
+- `generic_json_sse` — fallback for non-standard provider chunk shapes
+
+Register new adapters with `register_stream_protocol(...)` when adding future provider formats.
+
+### Cache + streaming notes
+
+- `stream` and `stream_options` are excluded from cache keying, so stream and non-stream
+  requests for the same prompt can share cache entries.
+- Exact cache skips non-deterministic requests when `non_deterministic: "skip"` and
+  `temperature > 0`. For repeat cache-hit demos, use `"temperature": 0`.
+- Budget rejections on stream requests still return JSON (`429`), not SSE.
+
+### Streaming response headers
+
+In addition to standard `X-Condense-*` headers:
+
+- `X-Condense-Stream-Transport`: `sse`
+- `X-Condense-Stream-Mode`: `live_upstream` | `cache_replay` | `bypass_passthrough`
+- `X-Condense-Stream-Protocol`: active adapter name (for example `openai_chat_sse`)
 
 Savings and dashboard endpoints:
 

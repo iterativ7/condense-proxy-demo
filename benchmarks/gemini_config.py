@@ -38,4 +38,7 @@ CONDENSE_MODES: tuple[tuple[str, str], ...] = (
     ("minimal", "benchmarks/presets/gemini_minimal.yaml"),
     ("cache_only", "benchmarks/presets/gemini_cache_only.yaml"),
     ("full", "benchmarks/presets/gemini_full.yaml"),
+    ("full_compression", "benchmarks/presets/gemini_full_compression.yaml"),
+    ("full_ml_routing", "benchmarks/presets/gemini_full_ml_routing.yaml"),
+    ("full_compression_ml_routing", "benchmarks/presets/gemini_full_compression_ml_routing.yaml"),
 )

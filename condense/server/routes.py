@@ -7,8 +7,15 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, Header, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi import APIRouter, Header, Request
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 
 from condense.cache.key import compute_cache_key
 from condense.config.loader import load_config
@@ -16,12 +23,92 @@ from condense.config.schema import CondenseConfig
 from condense.metrics.prometheus import render_prometheus_metrics
 from condense.pipeline import build_pipeline
 from condense.pipeline.context import PipelineContext
+from condense.pipeline.executor import PipelineExecutor
+from condense.pipeline.result import StepResult
+from condense.pipeline.steps.forward_step import ForwardStep
+from condense.pipeline.stream_forwarder import StreamForwarder
 from condense.session.detector import detect_session
+from condense.server.streaming import strip_internal_metadata
+from condense.server.stream_protocols import infer_stream_protocol, resolve_stream_protocol
 from condense.utils.hashing import short_hash
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _is_stream_request(body: dict, config: CondenseConfig) -> bool:
+    return bool(body.get("stream")) and bool(config.deployment.streaming_enabled)
+
+
+def _stream_sse_headers(*, mode: str, protocol: str) -> dict[str, str]:
+    """Headers that identify Condense SSE streaming paths to clients."""
+    return {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "X-Condense-Stream-Transport": "sse",
+        "X-Condense-Stream-Mode": mode,
+        "X-Condense-Stream-Protocol": protocol,
+    }
+
+
+def _apply_condense_headers(response, ctx: PipelineContext, config: CondenseConfig) -> None:
+    if not config.headers.add_savings_headers:
+        return
+    response.headers["X-Condense-Cache-Hit"] = str(ctx.cache_hit).lower()
+    response.headers["X-Condense-Cache-Type"] = ctx.cache_hit_type or "none"
+    response.headers["X-Condense-Original-Model"] = ctx.original_model or ""
+    response.headers["X-Condense-Routed-Model"] = ctx.routed_model or ctx.original_model or ""
+    response.headers["X-Condense-Techniques"] = ",".join(ctx.techniques_applied) if ctx.techniques_applied else "none"
+    response.headers["X-Condense-Savings-USD"] = f"{ctx.total_savings_usd:.4f}"
+    if ctx.session_id:
+        response.headers["X-Condense-Session-ID"] = ctx.session_id
+        response.headers["X-Condense-Session-Turn"] = str(ctx.session_turn)
+
+
+async def _store_cache_and_session(ctx: PipelineContext, result: StepResult) -> None:
+    cache_step = ctx.metadata.get("_cache_step")
+    if cache_step is not None and not ctx.cache_hit and result.response and result.status_code == 200:
+        try:
+            await cache_step.store_response(
+                ctx.original_request,
+                result.response,
+                ctx.cache_namespace,
+            )
+        except Exception as e:
+            logger.error(f"Failed to store cache: {e}")
+
+    session_store = ctx.metadata.get("_session_store")
+    if session_store is not None and ctx.session_id:
+        try:
+            request_hash = compute_cache_key(ctx.original_request)
+            await session_store.update(
+                ctx.session_id,
+                cost_usd=ctx.metadata.get("estimated_cost", 0.0),
+                request_hash=request_hash,
+            )
+        except Exception as e:
+            logger.error(f"Failed to update session: {e}")
+
+
+def _record_metrics(
+    app,
+    ctx: PipelineContext,
+    result: StepResult,
+    latency_ms: float,
+    *,
+    ttfb_ms: float = 0.0,
+    stream_duration_ms: float = 0.0,
+) -> None:
+    metrics = getattr(app.state, "metrics", None)
+    if metrics:
+        request_metrics = ctx.build_request_metrics(
+            result,
+            latency_ms,
+            ttfb_ms=ttfb_ms,
+            stream_duration_ms=stream_duration_ms,
+        )
+        metrics.record_request(**request_metrics.as_record_kwargs())
 
 
 def _enabled_optimization_ids(config: CondenseConfig) -> list[str]:
@@ -219,8 +306,6 @@ async def chat_completions(
         )
 
     config: CondenseConfig = getattr(app.state, "config", load_config())
-    cache_config = config.cache_config()
-
     # Compute cache namespace (tenant isolation)
     api_key = ""
     if authorization:
@@ -241,14 +326,23 @@ async def chat_completions(
         original_model=body.get("model"),
         metadata={
             "authorization_header": authorization,
+            "_session_store": getattr(app.state, "session_store", None),
         },
     )
+    stream_request = _is_stream_request(body, config)
+    requested_stream_protocol = infer_stream_protocol(
+        requested=body.get("stream_protocol") or config.upstream.stream_protocol,
+    )
+    resolved_live_protocol = resolve_stream_protocol(requested_stream_protocol).name
+    ctx.request.setdefault("stream_protocol", resolved_live_protocol)
 
     # Check circuit breaker
     circuit_breaker = getattr(app.state, "circuit_breaker", None)
     if circuit_breaker and circuit_breaker.is_open:
         # Bypass pipeline, forward directly
         logger.warning("Circuit breaker OPEN — bypassing optimization pipeline")
+        if stream_request:
+            return await _direct_forward_stream(body, config, authorization)
         result = await _direct_forward(body, config, authorization)
         return JSONResponse(result["response"], status_code=result["status_code"])
 
@@ -260,15 +354,91 @@ async def chat_completions(
         app.state.http_client,
     )
 
+    request_started = time.perf_counter()
+
+    if stream_request:
+        forward_step = next((step for step in pipeline.steps if isinstance(step, ForwardStep)), None)
+        pre_forward_steps = [step for step in pipeline.steps if not isinstance(step, ForwardStep)]
+        pre_forward_pipeline = PipelineExecutor(pre_forward_steps, allow_terminal_next=True)
+
+        pre_result = await pre_forward_pipeline.execute(ctx)
+        pre_latency_ms = (time.perf_counter() - request_started) * 1000
+
+        if pre_result.action == "reject":
+            _record_metrics(app, ctx, pre_result, pre_latency_ms)
+            return JSONResponse(
+                {"error": {"message": pre_result.error, "type": "condense_error"}},
+                status_code=pre_result.status_code,
+            )
+
+        if pre_result.action == "short_circuit":
+            _record_metrics(
+                app,
+                ctx,
+                pre_result,
+                pre_latency_ms,
+                ttfb_ms=pre_latency_ms,
+                stream_duration_ms=pre_latency_ms,
+            )
+            cached_payload = pre_result.response or {}
+            cache_replay_protocol = infer_stream_protocol(
+                requested=requested_stream_protocol,
+                cached_response=cached_payload,
+            )
+            replay_adapter = resolve_stream_protocol(cache_replay_protocol)
+            stream_response = StreamingResponse(
+                replay_adapter.replay_cached_response(cached_payload),
+                media_type="text/event-stream",
+                headers=_stream_sse_headers(mode="cache_replay", protocol=replay_adapter.name),
+            )
+            _apply_condense_headers(stream_response, ctx, config)
+            return stream_response
+
+        if forward_step is None:
+            return JSONResponse(
+                {"error": {"message": "Forward step missing for stream request", "type": "condense_error"}},
+                status_code=500,
+            )
+
+        async def _on_stream_complete(
+            final_response: dict,
+            status_code: int,
+            stream_elapsed_ms: float,
+            forward_ttfb_ms: float,
+        ) -> None:
+            result = StepResult(
+                action="short_circuit",
+                response=final_response,
+                status_code=status_code,
+                technique="forward",
+            )
+            if status_code == 200:
+                await _store_cache_and_session(ctx, result)
+            total_latency_ms = (time.perf_counter() - request_started) * 1000
+            _record_metrics(
+                app,
+                ctx,
+                result,
+                total_latency_ms,
+                ttfb_ms=pre_latency_ms + forward_ttfb_ms if forward_ttfb_ms > 0 else pre_latency_ms,
+                stream_duration_ms=stream_elapsed_ms,
+            )
+
+        stream_forwarder = StreamForwarder(forward_step)
+        stream_response = StreamingResponse(
+            stream_forwarder.sse_iterator(ctx, on_complete=_on_stream_complete),
+            media_type="text/event-stream",
+            headers=_stream_sse_headers(mode="live_upstream", protocol=resolved_live_protocol),
+        )
+        _apply_condense_headers(stream_response, ctx, config)
+        return stream_response
+
     start_time = time.time()
     result = await pipeline.execute(ctx)
     latency_ms = (time.time() - start_time) * 1000
 
     # Record metrics
-    metrics = getattr(app.state, "metrics", None)
-    if metrics:
-        request_metrics = ctx.build_request_metrics(result, latency_ms)
-        metrics.record_request(**request_metrics.as_record_kwargs())
+    _record_metrics(app, ctx, result, latency_ms)
 
     # Handle reject
     if result.action == "reject":
@@ -277,50 +447,18 @@ async def chat_completions(
             status_code=result.status_code,
         )
 
-    # Post-pipeline: store in cache via strategy-based CacheStep
-    cache_step = ctx.metadata.get("_cache_step")
-    if cache_step is not None and not ctx.cache_hit and result.response and result.status_code == 200:
-        try:
-            await cache_step.store_response(
-                ctx.original_request,
-                result.response,
-                ctx.cache_namespace,
-            )
-        except Exception as e:
-            logger.error(f"Failed to store cache: {e}")
-
-    # Post-pipeline: update session state
-    session_store = getattr(app.state, "session_store", None)
-    if session_store is not None and ctx.session_id:
-        try:
-            request_hash = compute_cache_key(ctx.original_request)
-            await session_store.update(
-                ctx.session_id,
-                cost_usd=ctx.metadata.get("estimated_cost", 0.0),
-                request_hash=request_hash,
-            )
-        except Exception as e:
-            logger.error(f"Failed to update session: {e}")
+    await _store_cache_and_session(ctx, result)
 
     # Build response with condense headers
     response_data = result.response or {}
 
     # Clean internal metadata before returning
-    clean_response = {k: v for k, v in response_data.items() if not k.startswith("_condense_")}
+    clean_response = strip_internal_metadata(response_data)
 
     response = JSONResponse(clean_response, status_code=result.status_code)
 
     # Add X-Condense-* headers
-    if config.headers.add_savings_headers:
-        response.headers["X-Condense-Cache-Hit"] = str(ctx.cache_hit).lower()
-        response.headers["X-Condense-Cache-Type"] = ctx.cache_hit_type or "none"
-        response.headers["X-Condense-Original-Model"] = ctx.original_model or ""
-        response.headers["X-Condense-Routed-Model"] = ctx.routed_model or ctx.original_model or ""
-        response.headers["X-Condense-Techniques"] = ",".join(ctx.techniques_applied) if ctx.techniques_applied else "none"
-        response.headers["X-Condense-Savings-USD"] = f"{ctx.total_savings_usd:.4f}"
-        if ctx.session_id:
-            response.headers["X-Condense-Session-ID"] = ctx.session_id
-            response.headers["X-Condense-Session-Turn"] = str(ctx.session_turn)
+    _apply_condense_headers(response, ctx, config)
 
     return response
 
@@ -341,6 +479,40 @@ async def _direct_forward(body: dict, config: CondenseConfig, authorization: Opt
                 "response": {"error": {"message": str(e), "type": "proxy_error"}},
                 "status_code": 502,
             }
+
+
+async def _direct_forward_stream(
+    body: dict,
+    config: CondenseConfig,
+    authorization: Optional[str],
+) -> StreamingResponse:
+    """Direct streaming forward to upstream (circuit breaker bypass)."""
+    url = f"{config.upstream.url.rstrip('/')}/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if authorization:
+        headers["Authorization"] = authorization
+
+    client = httpx.AsyncClient(timeout=config.upstream.timeout_seconds)
+    request = client.build_request("POST", url, json=body, headers=headers)
+    upstream_response = await client.send(request, stream=True)
+
+    passthrough_headers = _stream_sse_headers(mode="bypass_passthrough", protocol="raw_passthrough")
+
+    async def _passthrough():
+        try:
+            async for chunk in upstream_response.aiter_raw():
+                if chunk:
+                    yield chunk
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        _passthrough(),
+        status_code=upstream_response.status_code,
+        media_type=upstream_response.headers.get("content-type", "text/event-stream"),
+        headers=passthrough_headers,
+    )
 
 
 @router.get("/health")
@@ -401,6 +573,8 @@ async def metrics_summary(request: Request):
             "rates": {
                 "cache_hit_rate": 0.0,
                 "avg_savings_per_request_usd": 0.0,
+                "avg_ttfb_ms": 0.0,
+                "avg_stream_duration_ms": 0.0,
             },
             "uptime_seconds": 0.0,
         }
@@ -424,6 +598,8 @@ async def metrics_summary(request: Request):
         "rates": {
             "cache_hit_rate": round(tracker.cache_hit_rate, 2),
             "avg_savings_per_request_usd": round(tracker.avg_savings_per_request_usd, 6),
+            "avg_ttfb_ms": round(snap.avg_ttfb_ms, 2),
+            "avg_stream_duration_ms": round(snap.avg_stream_duration_ms, 2),
         },
         "uptime_seconds": round(snap.uptime_seconds, 1),
     }

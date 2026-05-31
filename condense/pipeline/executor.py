@@ -11,8 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineExecutor:
-    def __init__(self, steps: List[BaseStep]):
+    def __init__(self, steps: List[BaseStep], allow_terminal_next: bool = False):
         self.steps = [s for s in steps if s.is_enabled()]
+        self.allow_terminal_next = allow_terminal_next
 
     @staticmethod
     def _surface_overlap(left: str, right: str) -> bool:
@@ -212,8 +213,12 @@ class PipelineExecutor:
                 logger.error(f"Step batch [{names}] failed: {e}", exc_info=True)
                 continue
 
-        # All steps passed — should have been handled by ForwardStep
-        # If we get here, something is wrong (ForwardStep missing?)
+        if self.allow_terminal_next:
+            result = StepResult(action="next")
+            await self._run_backward(ctx, applied, result)
+            return result
+
+        # All steps passed — should have been handled by ForwardStep.
         result = StepResult(action="reject", error="Pipeline completed without forwarding", status_code=500)
         await self._run_backward(ctx, applied, result)
         return result

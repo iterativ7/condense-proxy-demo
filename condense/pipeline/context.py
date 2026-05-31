@@ -18,6 +18,8 @@ class RequestMetrics:
     routed: bool
     rejected: bool
     latency_ms: float
+    ttfb_ms: float = 0.0
+    stream_duration_ms: float = 0.0
     optimization_updates: list[dict[str, Any]] = field(default_factory=list)
 
     def as_record_kwargs(self) -> dict[str, Any]:
@@ -33,6 +35,8 @@ class RequestMetrics:
             "routed": self.routed,
             "rejected": self.rejected,
             "latency_ms": self.latency_ms,
+            "ttfb_ms": self.ttfb_ms,
+            "stream_duration_ms": self.stream_duration_ms,
             "optimization_updates": self.optimization_updates,
         }
 
@@ -126,7 +130,14 @@ class PipelineContext:
             }
         )
 
-    def build_request_metrics(self, result: Any, latency_ms: float) -> RequestMetrics:
+    def build_request_metrics(
+        self,
+        result: Any,
+        latency_ms: float,
+        *,
+        ttfb_ms: float = 0.0,
+        stream_duration_ms: float = 0.0,
+    ) -> RequestMetrics:
         """Build canonical request metrics from pipeline state + final result."""
         prompt_tokens, completion_tokens, total_tokens = self._extract_usage_metrics(
             getattr(result, "response", None)
@@ -143,5 +154,7 @@ class PipelineContext:
             routed=self.routed_model is not None,
             rejected=getattr(result, "action", "") == "reject",
             latency_ms=latency_ms,
+            ttfb_ms=ttfb_ms,
+            stream_duration_ms=stream_duration_ms,
             optimization_updates=list(self.optimization_updates),
         )
